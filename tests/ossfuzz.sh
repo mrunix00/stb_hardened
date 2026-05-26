@@ -2,11 +2,11 @@
 # This script is meant to be run by
 # https://github.com/google/oss-fuzz/blob/master/projects/stb/Dockerfile
 
-$CXX $CXXFLAGS -std=c++11 -I. -DSTBI_ONLY_PNG  \
+$CXX $CXXFLAGS -std=c++11 -I. -I$SRC/stb -DSTBI_ONLY_PNG  \
     $SRC/stb/tests/stbi_read_fuzzer.c \
     -o $OUT/stb_png_read_fuzzer $LIB_FUZZING_ENGINE
 
-$CXX $CXXFLAGS -std=c++11 -I. \
+$CXX $CXXFLAGS -std=c++11 -I. -I$SRC/stb \
     $SRC/stb/tests/stbi_read_fuzzer.c \
     -o $OUT/stbi_read_fuzzer $LIB_FUZZING_ENGINE
 
