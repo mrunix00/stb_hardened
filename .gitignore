@@ -3,6 +3,6 @@
 *.exe
 build/
 tests/bug_[0-9][0-9][0-9]
-tests/**/*asan*.out
-tests/**/*asan*.exit
+*.out
+*.exit
 asan.*
