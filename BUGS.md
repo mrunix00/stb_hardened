@@ -155,3 +155,54 @@
 | BUG-004 | High | Heap Buffer Overflow (OOB Read) | Patched | Fixed at stb_truetype.h:1392 |
 | BUG-005 | High | Heap Buffer Overflow (Write) | Patched | Fixed at stb_truetype.h:3375-3380 and 4245-4249 |
 | BUG-006 | High | Heap Buffer Overflow (OOB Read) | Patched | Fixed at stb_truetype.h:1623-1631, 1691-1779, 1840-1845 |
+
+## BUG-007
+
+- **Library:** `stb_truetype.h`
+- **Severity:** High
+- **Class:** Heap Buffer Overflow (OOB Read)
+- **Location:** `stb_truetype.h:1421`
+- **Source:** https://nvd.nist.gov/vuln/detail/CVE-2026-5315
+- **Technique:** web-search
+- **Description:**
+  When initializing CFF fonts, `stbtt_InitFont_internal` creates a new buffer for
+  the CFF table with a hardcoded size of 512MB (`512*1024*1024`). If the actual
+  font data is smaller than this, subsequent parsing operations that trust the
+  buffer's size field can read past the end of the allocated memory.
+- **Reproduction sketch:**
+  ```c
+  // Create a small font buffer containing only a CFF table header.
+  // Call stbtt_InitFont. The CFF buffer will be created with size 512MB.
+  // Further parsing will OOB read if it tries to access data beyond the
+  // actual input buffer.
+  ```
+- **Status:** Patched
+- **Fix:** Implement `stbtt__get_table_size` to retrieve the actual table size from the font directory and use it in `stbtt_InitFont_internal`.
+
+## BUG-008
+
+- **Library:** `stb_truetype.h`
+- **Severity:** Medium
+- **Class:** Denial of Service (Assertion Failure)
+- **Location:** `stb_truetype.h:1212`
+- **Source:** https://github.com/nothings/stb/issues/864
+- **Technique:** web-search
+- **Description:**
+  An assertion failure in `stbtt__cff_int` can be triggered by a malformed
+  CFF font. The function contains `STBTT_assert(0)` in its default switch case
+  (reached if an unknown operand byte is encountered), which causes the
+  application to crash if assertions are enabled.
+- **Reproduction sketch:**
+  ```c
+  // Provide a CFF font with an invalid operand byte (e.g. 255) in a dictionary.
+  // Call stbtt_InitFont to trigger the assertion in stbtt__cff_int.
+  ```
+- **Status:** Patched
+- **Fix:** Removed `STBTT_assert(0)` in `stbtt__cff_int` to allow graceful failure (returning 0).
+
+## Session Summary — 2026-05-30
+
+| Bug ID | Severity | Class | Status | Notes |
+|--------|----------|-------|--------|-------|
+| BUG-007 | High | Heap Buffer Overflow (OOB Read) | Patched | Replaced 512MB hardcoded size with actual table size |
+| BUG-008 | Medium | Denial of Service (Assertion Failure) | Patched | Removed STBTT_assert(0) in stbtt__cff_int |
