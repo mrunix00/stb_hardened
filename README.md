@@ -2,6 +2,8 @@
 
 This project aims to harden [stb](https://github.com/nothings/stb) libraries using AI agents.
 
+> **Disclaimer:** This is a work-in-progress project. It does not provide, imply, or ensure any security guarantees for the hardened libraries or generated patches. Use the results at your own risk and perform independent review and validation before relying on them.
+
 ## How to Use
 
 When using an agent to search for bugs in this project, the prompt should specify the following:
