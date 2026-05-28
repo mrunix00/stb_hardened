@@ -3372,8 +3372,12 @@ static void stbtt__rasterize_sorted_edges(stbtt__bitmap *result, stbtt__edge *e,
             sum += scanline2[i];
             k = scanline[i] + sum;
             k = (float) STBTT_fabs(k)*255 + 0.5f;
-            m = (int) k;
-            if (m > 255) m = 255;
+            if (!(k > 0))
+               m = 0;
+            else if (k >= 255)
+               m = 255;
+            else
+               m = (int) k;
             result->pixels[j*result->stride + i] = (unsigned char) m;
          }
       }
@@ -4242,6 +4246,11 @@ STBTT_DEF int stbtt_PackFontRangesRenderIntoRects(stbtt_pack_context *spc, const
             r->y += pad;
             r->w -= pad;
             r->h -= pad;
+            if ((int) r->x < 0 || (int) r->y < 0 || (int) r->w < (int) spc->h_oversample || (int) r->h < (int) spc->v_oversample || (int) r->x + (int) r->w > spc->width || (int) r->y + (int) r->h > spc->height) {
+               return_value = 0;
+               ++k;
+               continue;
+            }
             stbtt_GetGlyphHMetrics(info, glyph, &advance, &lsb);
             stbtt_GetGlyphBitmapBox(info, glyph,
                                     scale * spc->h_oversample,

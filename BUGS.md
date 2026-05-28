@@ -89,6 +89,30 @@
 - **Status:** Patched
 - **Fix:** Add an early `stbtt__isfont(data + fontstart)` check in `stbtt_InitFont_internal` before table-directory scans (stb_truetype.h:1392).
 
+## BUG-005
+
+- **Library:** `stb_truetype.h`
+- **Severity:** High
+- **Class:** Heap Buffer Overflow (Write)
+- **Location:** `stb_truetype.h:4240-4258`
+- **Source:** https://github.com/nothings/stb/issues/1953
+- **Technique:** web-search
+- **Description:**
+  `stbtt_PackFontRangesRenderIntoRects` trusts packed rectangle coordinates and
+  dimensions after applying padding, then computes the destination pointer as
+  `spc->pixels + r->x + r->y * spc->stride_in_bytes`. A malformed font and
+  packing configuration can produce negative or undersized rectangles that are
+  still marked packed, causing rasterization to write before the atlas buffer.
+  The issue PoC also drives non-finite raster coverage values that trigger UBSan
+  before the ASan heap write when UBSan is configured to halt immediately.
+- **Reproduction sketch:**
+  ```c
+  // Compile tests/bug_005.c with ASan/UBSan and run it. The embedded PoC font
+  // from nothings/stb#1953 triggers an atlas-buffer heap write before the fix.
+  ```
+- **Status:** Patched
+- **Fix:** Validate padded pack rectangles before rendering and clamp non-positive/non-finite raster coverage before int conversion (stb_truetype.h:3375-3380, 4245-4249).
+
 ## Session Summary — 2026-05-26
 
 | Bug ID | Severity | Class | Status | Notes |
@@ -105,3 +129,4 @@
 | BUG-002 | High | Integer Overflow → Heap Buffer Overflow (Write) | Invalid | Previously invalid; unchanged |
 | BUG-003 | High | Stack Overflow (Unbounded Recursion) | Patched | Regression test still passes |
 | BUG-004 | High | Heap Buffer Overflow (OOB Read) | Patched | Fixed at stb_truetype.h:1392 |
+| BUG-005 | High | Heap Buffer Overflow (Write) | Patched | Fixed at stb_truetype.h:3375-3380 and 4245-4249 |
