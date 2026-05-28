@@ -1622,6 +1622,15 @@ static int stbtt__GetGlyfOffset(const stbtt_fontinfo *info, int glyph_index)
    return g1==g2 ? -1 : g1; // if length is 0, return -1
 }
 
+static int stbtt__GetGlyfOffsetEnd(const stbtt_fontinfo *info, int glyph_index)
+{
+   if (glyph_index >= info->numGlyphs) return -1;
+   if (info->indexToLocFormat >= 2)    return -1;
+   if (info->indexToLocFormat == 0)
+      return info->glyf + ttUSHORT(info->data + info->loca + glyph_index * 2 + 2) * 2;
+   return info->glyf + ttULONG(info->data + info->loca + glyph_index * 4 + 4);
+}
+
 static int stbtt__GetGlyphInfoT2(const stbtt_fontinfo *info, int glyph_index, int *x0, int *y0, int *x1, int *y1);
 
 STBTT_DEF int stbtt_GetGlyphBox(const stbtt_fontinfo *info, int glyph_index, int *x0, int *y0, int *x1, int *y1)
@@ -1681,12 +1690,15 @@ static int stbtt__GetGlyphShapeTT(const stbtt_fontinfo *info, int glyph_index, s
    stbtt_vertex *vertices=0;
    int num_vertices=0;
    int g = stbtt__GetGlyfOffset(info, glyph_index);
+   int glyph_end = stbtt__GetGlyfOffsetEnd(info, glyph_index);
+   stbtt_uint8 *glyph_end_ptr;
 
    *pvertices = NULL;
 
    if (depth > 32) return 0;
 
-   if (g < 0) return 0;
+   if (g < 0 || glyph_end < g) return 0;
+   glyph_end_ptr = data + glyph_end;
 
    numberOfContours = ttSHORT(data + g);
 
@@ -1696,8 +1708,12 @@ static int stbtt__GetGlyphShapeTT(const stbtt_fontinfo *info, int glyph_index, s
       stbtt_int32 x,y,cx,cy,sx,sy, scx,scy;
       stbtt_uint8 *points;
       endPtsOfContours = (data + g + 10);
+      if (endPtsOfContours + numberOfContours * 2 + 2 > glyph_end_ptr)
+         return 0;
       ins = ttUSHORT(data + g + 10 + numberOfContours * 2);
       points = data + g + 10 + numberOfContours * 2 + 2 + ins;
+      if (points > glyph_end_ptr)
+         return 0;
 
       n = 1+ttUSHORT(endPtsOfContours + numberOfContours*2-2);
 
@@ -1719,9 +1735,12 @@ static int stbtt__GetGlyphShapeTT(const stbtt_fontinfo *info, int glyph_index, s
 
       for (i=0; i < n; ++i) {
          if (flagcount == 0) {
+            if (points >= glyph_end_ptr) goto simple_glyph_error;
             flags = *points++;
-            if (flags & 8)
+            if (flags & 8) {
+               if (points >= glyph_end_ptr) goto simple_glyph_error;
                flagcount = *points++;
+            }
          } else
             --flagcount;
          vertices[off+i].type = flags;
@@ -1732,10 +1751,13 @@ static int stbtt__GetGlyphShapeTT(const stbtt_fontinfo *info, int glyph_index, s
       for (i=0; i < n; ++i) {
          flags = vertices[off+i].type;
          if (flags & 2) {
-            stbtt_int16 dx = *points++;
+            stbtt_int16 dx;
+            if (points >= glyph_end_ptr) goto simple_glyph_error;
+            dx = *points++;
             x += (flags & 16) ? dx : -dx; // ???
          } else {
             if (!(flags & 16)) {
+               if (points + 1 >= glyph_end_ptr) goto simple_glyph_error;
                x = x + (stbtt_int16) (points[0]*256 + points[1]);
                points += 2;
             }
@@ -1748,10 +1770,13 @@ static int stbtt__GetGlyphShapeTT(const stbtt_fontinfo *info, int glyph_index, s
       for (i=0; i < n; ++i) {
          flags = vertices[off+i].type;
          if (flags & 4) {
-            stbtt_int16 dy = *points++;
+            stbtt_int16 dy;
+            if (points >= glyph_end_ptr) goto simple_glyph_error;
+            dy = *points++;
             y += (flags & 32) ? dy : -dy; // ???
          } else {
             if (!(flags & 32)) {
+               if (points + 1 >= glyph_end_ptr) goto simple_glyph_error;
                y = y + (stbtt_int16) (points[0]*256 + points[1]);
                points += 2;
             }
@@ -1813,6 +1838,12 @@ static int stbtt__GetGlyphShapeTT(const stbtt_fontinfo *info, int glyph_index, s
          }
       }
       num_vertices = stbtt__close_shape(vertices, num_vertices, was_off, start_off, sx,sy,scx,scy,cx,cy);
+      goto simple_glyph_done;
+   simple_glyph_error:
+      STBTT_free(vertices, info->userdata);
+      return 0;
+   simple_glyph_done:
+      ;
    } else if (numberOfContours < 0) {
       // Compound shapes.
       int more = 1;

@@ -113,6 +113,30 @@
 - **Status:** Patched
 - **Fix:** Validate padded pack rectangles before rendering and clamp non-positive/non-finite raster coverage before int conversion (stb_truetype.h:3375-3380, 4245-4249).
 
+## BUG-006
+
+- **Library:** `stb_truetype.h`
+- **Severity:** High
+- **Class:** Heap Buffer Overflow (OOB Read)
+- **Location:** `stb_truetype.h:1707-1760`
+- **Source:** https://github.com/nothings/stb/issues/1905
+- **Technique:** web-search
+- **Description:**
+  `stbtt__GetGlyphShapeTT` trusts simple-glyph contour endpoints and instruction
+  lengths when deriving the `points` cursor. A malformed TrueType glyph can claim
+  thousands of points in `endPtsOfContours` while the `glyf` record contains only
+  a few bytes of flag/coordinate data. The flags and coordinate loops then read
+  past the glyph data and, with a tightly allocated font buffer, past the heap
+  allocation.
+- **Reproduction sketch:**
+  ```c
+  // Compile tests/bug_006.c with ASan/UBSan and run it. The generated in-memory
+  // font has one simple glyph whose endpoint says 10001 points but whose glyf
+  // data is truncated after two point-data bytes.
+  ```
+- **Status:** Patched
+- **Fix:** Track the simple glyph end offset from `loca` and reject glyphs whose flag or coordinate reads would pass that boundary (stb_truetype.h:1623-1631, 1691-1779, 1840-1845).
+
 ## Session Summary — 2026-05-26
 
 | Bug ID | Severity | Class | Status | Notes |
@@ -130,3 +154,4 @@
 | BUG-003 | High | Stack Overflow (Unbounded Recursion) | Patched | Regression test still passes |
 | BUG-004 | High | Heap Buffer Overflow (OOB Read) | Patched | Fixed at stb_truetype.h:1392 |
 | BUG-005 | High | Heap Buffer Overflow (Write) | Patched | Fixed at stb_truetype.h:3375-3380 and 4245-4249 |
+| BUG-006 | High | Heap Buffer Overflow (OOB Read) | Patched | Fixed at stb_truetype.h:1623-1631, 1691-1779, 1840-1845 |
