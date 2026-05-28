@@ -66,6 +66,29 @@
 - **Status:** Patched
 - **Fix:** Add a recursion depth guard in stbtt__GetGlyphShapeTT and thread depth into recursive composite glyph calls to prevent infinite recursion (stb_truetype.h:1674, 1684, 1859, 2300).
 
+## BUG-004
+
+- **Library:** `stb_truetype.h`
+- **Severity:** High
+- **Class:** Heap Buffer Overflow (OOB Read)
+- **Location:** `stb_truetype.h:1306-1314`
+- **Source:** https://github.com/nothings/stb/issues/866
+- **Technique:** web-search
+- **Description:**
+  A malformed WOFF2-like 16-byte input reaches `stbtt_InitFont`, which calls
+  `stbtt__find_table` without first verifying that the supplied data starts with
+  a supported TrueType/OpenType font signature. `stbtt__find_table` then trusts
+  attacker-controlled table-count fields and reads past the heap buffer while
+  scanning table directory entries.
+- **Reproduction sketch:**
+  ```c
+  // Compile tests/bug_004.c with ASan/UBSan and run it. The embedded 16-byte
+  // PoC from nothings/stb#866 triggers an OOB read in stbtt__find_table before
+  // the fix.
+  ```
+- **Status:** Patched
+- **Fix:** Add an early `stbtt__isfont(data + fontstart)` check in `stbtt_InitFont_internal` before table-directory scans (stb_truetype.h:1392).
+
 ## Session Summary — 2026-05-26
 
 | Bug ID | Severity | Class | Status | Notes |
@@ -73,3 +96,12 @@
 | BUG-001 | High | Heap Buffer Overflow (OOB Read) | Invalid | Repro input did not trigger sanitizer in this build |
 | BUG-002 | High | Integer Overflow → Heap Buffer Overflow (Write) | Invalid | Overflow requires ~32,768 components (impractical O(n²)); 32-bit only for heap overflow |
 | BUG-003 | High | Stack Overflow (Unbounded Recursion) | Patched | Added recursion depth guard in composite glyph path |
+
+## Session Summary — 2026-05-28
+
+| Bug ID | Severity | Class | Status | Notes |
+|--------|----------|-------|--------|-------|
+| BUG-001 | High | Heap Buffer Overflow (OOB Read) | Invalid | Previously invalid; unchanged |
+| BUG-002 | High | Integer Overflow → Heap Buffer Overflow (Write) | Invalid | Previously invalid; unchanged |
+| BUG-003 | High | Stack Overflow (Unbounded Recursion) | Patched | Regression test still passes |
+| BUG-004 | High | Heap Buffer Overflow (OOB Read) | Patched | Fixed at stb_truetype.h:1392 |
