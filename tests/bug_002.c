@@ -91,14 +91,14 @@ static size_t build_font(uint8_t *font, int pts, int ncomp) {
     int remaining = pts;
     while (remaining > 0) {
       int batch = remaining > 255 ? 255 : remaining;
-      font[off++] = 0x0F;
+      font[off++] = 0x3F;
       font[off++] = (uint8_t)(batch - 1);
-      for (int k = 0; k < batch; ++k) {
-        font[off++] = 1;
-        font[off++] = 1;
-      }
       remaining -= batch;
     }
+    for (int i = 0; i < pts; ++i)
+      font[off++] = 1;
+    for (int i = 0; i < pts; ++i)
+      font[off++] = 1;
   }
 
   size_t g1 = off;
