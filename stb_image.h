@@ -6575,6 +6575,7 @@ typedef struct
    int cur_x, cur_y;
    int line_size;
    int delay;
+   int recursion_depth;
 } stbi__gif;
 
 static int stbi__gif_test_raw(stbi__context *s)
@@ -6658,8 +6659,12 @@ static void stbi__out_gif_code(stbi__gif *g, stbi__uint16 code)
 
    // recurse to decode the prefixes, since the linked-list is backwards,
    // and working backwards through an interleaved image would be nasty
-   if (g->codes[code].prefix >= 0)
+   if (g->codes[code].prefix >= 0) {
+      if (g->recursion_depth > 256) return;
+      ++g->recursion_depth;
       stbi__out_gif_code(g, g->codes[code].prefix);
+      --g->recursion_depth;
+   }
 
    if (g->cur_y >= g->max_y) return;
 
@@ -6991,7 +6996,9 @@ static void *stbi__load_gif_main(stbi__context *s, int **delays, int *x, int *y,
             stride = g.w * g.h * 4;
 
             if (out) {
-               void *tmp = (stbi_uc*) STBI_REALLOC_SIZED( out, out_size, layers * stride );
+               void *tmp;
+               if (!stbi__mad2sizes_valid(layers, stride, 0)) return stbi__load_gif_main_outofmem(&g, out, delays);
+               tmp = (stbi_uc*) STBI_REALLOC_SIZED( out, out_size, layers * stride );
                if (!tmp)
                   return stbi__load_gif_main_outofmem(&g, out, delays);
                else {
@@ -7000,19 +7007,21 @@ static void *stbi__load_gif_main(stbi__context *s, int **delays, int *x, int *y,
                }
 
                if (delays) {
-                  int *new_delays = (int*) STBI_REALLOC_SIZED( *delays, delays_size, sizeof(int) * layers );
+                  int *new_delays;
+                  if (!stbi__mad2sizes_valid(layers, (int)sizeof(int), 0)) return stbi__load_gif_main_outofmem(&g, out, delays);
+                  new_delays = (int*) STBI_REALLOC_SIZED( *delays, delays_size, sizeof(int) * layers );
                   if (!new_delays)
                      return stbi__load_gif_main_outofmem(&g, out, delays);
                   *delays = new_delays;
                   delays_size = layers * sizeof(int);
                }
             } else {
-               out = (stbi_uc*)stbi__malloc( layers * stride );
+               out = (stbi_uc*)stbi__malloc_mad2( layers, stride, 0 );
                if (!out)
                   return stbi__load_gif_main_outofmem(&g, out, delays);
                out_size = layers * stride;
                if (delays) {
-                  *delays = (int*) stbi__malloc( layers * sizeof(int) );
+                  *delays = (int*) stbi__malloc_mad2( layers, (int)sizeof(int), 0 );
                   if (!*delays)
                      return stbi__load_gif_main_outofmem(&g, out, delays);
                   delays_size = layers * sizeof(int);
