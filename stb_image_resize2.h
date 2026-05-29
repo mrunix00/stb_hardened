@@ -1084,6 +1084,14 @@ static stbir__inline int stbir__max(int a, int b)
   return a > b ? a : b;
 }
 
+static stbir__inline int stbir__mul_add_overflow_check(size_t a, size_t b, size_t add, size_t* out)
+{
+  if ( a != 0 && b > ( (size_t)-1 ) / a ) return 0;
+  if ( add > ( (size_t)-1 ) - ( a * b ) ) return 0;
+  *out = a * b + add;
+  return 1;
+}
+
 static float stbir__srgb_uchar_to_linear_float[256] = {
   0.000000f, 0.000304f, 0.000607f, 0.000911f, 0.001214f, 0.001518f, 0.001821f, 0.002125f, 0.002428f, 0.002732f, 0.003035f,
   0.003347f, 0.003677f, 0.004025f, 0.004391f, 0.004777f, 0.005182f, 0.005605f, 0.006049f, 0.006512f, 0.006995f, 0.007499f,
@@ -3020,6 +3028,9 @@ static int stbir__get_coefficient_width(stbir__sampler * samp, int is_gather, vo
 {
   float scale = samp->scale_info.scale;
   stbir__support_callback * support = samp->filter_support;
+
+  if ( samp->filter_enum == STBIR_FILTER_POINT_SAMPLE )
+    return 1;
 
   switch( is_gather )
   {
@@ -6240,6 +6251,23 @@ static void stbir__resample_horizontal_gather(stbir__info const * stbir_info, fl
   STBIR_PROFILE_START( horizontal );
   if ( ( stbir_info->horizontal.filter_enum == STBIR_FILTER_POINT_SAMPLE ) && ( stbir_info->horizontal.scale_info.scale == 1.0f ) )
     STBIR_MEMCPY( output_buffer, input_buffer, stbir_info->horizontal.scale_info.output_sub_size * sizeof( float ) * stbir_info->effective_channels );
+  else if ( stbir_info->horizontal.filter_enum == STBIR_FILTER_POINT_SAMPLE )
+  {
+    float const * output_end = output_buffer + stbir_info->horizontal.scale_info.output_sub_size * stbir_info->effective_channels;
+    float * output = output_buffer;
+    stbir__contributors const * horizontal_contributors = stbir_info->horizontal.contributors;
+
+    STBIR_SIMD_NO_UNROLL_LOOP_START
+    do {
+      float const * decode = decode_buffer + horizontal_contributors->n0 * stbir_info->effective_channels;
+      int i;
+      for ( i = 0; i < stbir_info->effective_channels; i++ )
+        output[ i ] = decode[ i ];
+
+      output += stbir_info->effective_channels;
+      ++horizontal_contributors;
+    } while ( output < output_end );
+  }
   else
     stbir_info->horizontal_gather_channels( output_buffer, stbir_info->horizontal.scale_info.output_sub_size, decode_buffer, stbir_info->horizontal.contributors, stbir_info->horizontal.coefficients, stbir_info->horizontal.coefficient_width );
   STBIR_PROFILE_END( horizontal );
@@ -7101,20 +7129,32 @@ static stbir__info * stbir__alloc_internal_mem_and_build_samplers( stbir__sample
   // sometimes read one float off in some of the unrolled loops (with a weight of zero coeff, so it doesn't have an effect)
   //   we use a few extra floats instead of just 1, so that input callback buffer can overlap with the decode buffer without
   //   the conversion routines overwriting the callback input data.
-  decode_buffer_size = ( conservative->n1 - conservative->n0 + 1 ) * effective_channels * sizeof(float) + sizeof(float)*STBIR_INPUT_CALLBACK_PADDING; // extra floats for input callback stagger
+  if ( !stbir__mul_add_overflow_check( (size_t)conservative->n1 - conservative->n0 + 1, (size_t)effective_channels * sizeof(float), sizeof(float)*STBIR_INPUT_CALLBACK_PADDING, &decode_buffer_size ) )
+    return 0;
 
 #if defined( STBIR__SEPARATE_ALLOCATIONS ) && defined(STBIR_SIMD8)
   if ( effective_channels == 3 )
+  {
+    if ( decode_buffer_size > ( (size_t)-1 ) - sizeof(float) ) return 0;
     decode_buffer_size += sizeof(float); // avx in 3 channel mode needs one float at the start of the buffer (only with separate allocations)
+  }
 #endif
 
-  ring_buffer_length_bytes = (size_t)horizontal->scale_info.output_sub_size * (size_t)effective_channels * sizeof(float) + sizeof(float)*STBIR_INPUT_CALLBACK_PADDING; // extra floats for padding
+  if ( !stbir__mul_add_overflow_check( (size_t)horizontal->scale_info.output_sub_size, (size_t)effective_channels * sizeof(float), sizeof(float)*STBIR_INPUT_CALLBACK_PADDING, &ring_buffer_length_bytes ) )
+    return 0;
 
   // if we do vertical first, the ring buffer holds a whole decoded line
   if ( vertical_first )
+  {
+    if ( decode_buffer_size > ( (size_t)-1 ) - 15 ) return 0;
     ring_buffer_length_bytes = ( decode_buffer_size + 15 ) & ~15;
+  }
 
-  if ( ( ring_buffer_length_bytes & 4095 ) == 0 ) ring_buffer_length_bytes += 64*3; // avoid 4k alias
+  if ( ( ring_buffer_length_bytes & 4095 ) == 0 )
+  {
+    if ( ring_buffer_length_bytes > ( (size_t)-1 ) - 64*3 ) return 0;
+    ring_buffer_length_bytes += 64*3; // avoid 4k alias
+  }
 
   // One extra entry because floating point precision problems sometimes cause an extra to be necessary.
   alloc_ring_buffer_num_entries = vertical->filter_pixel_width + 1;
@@ -7123,13 +7163,15 @@ static stbir__info * stbir__alloc_internal_mem_and_build_samplers( stbir__sample
   if ( ( !vertical->is_gather ) && ( alloc_ring_buffer_num_entries > conservative_split_output_size ) )
     alloc_ring_buffer_num_entries = conservative_split_output_size;
 
-  ring_buffer_size = (size_t)alloc_ring_buffer_num_entries * (size_t)ring_buffer_length_bytes;
+  if ( !stbir__mul_add_overflow_check( (size_t)alloc_ring_buffer_num_entries, ring_buffer_length_bytes, 0, &ring_buffer_size ) )
+    return 0;
 
   // The vertical buffer is used differently, depending on whether we are scattering
   //   the vertical scanlines, or gathering them.
   //   If scattering, it's used at the temp buffer to accumulate each output.
   //   If gathering, it's just the output buffer.
-  vertical_buffer_size = (size_t)horizontal->scale_info.output_sub_size * (size_t)effective_channels * sizeof(float) + sizeof(float);  // extra float for padding
+  if ( !stbir__mul_add_overflow_check( (size_t)horizontal->scale_info.output_sub_size, (size_t)effective_channels * sizeof(float), sizeof(float), &vertical_buffer_size ) )
+    return 0;
 
   // we make two passes through this loop, 1st to add everything up, 2nd to allocate and init
   for(;;)
@@ -7142,7 +7184,16 @@ static stbir__info * stbir__alloc_internal_mem_and_build_samplers( stbir__sample
 #ifdef STBIR__SEPARATE_ALLOCATIONS
     #define STBIR__NEXT_PTR( ptr, size, ntype ) if ( alloced ) { void * p = STBIR_MALLOC( size, user_data); if ( p == 0 ) { stbir__free_internal_mem( info ); return 0; } (ptr) = (ntype*)p; }
 #else
-    #define STBIR__NEXT_PTR( ptr, size, ntype ) advance_mem = (void*) ( ( ((size_t)advance_mem) + 15 ) & ~15 ); if ( alloced ) ptr = (ntype*)advance_mem; advance_mem = (char*)(((size_t)advance_mem) + (size));
+    #define STBIR__NEXT_PTR( ptr, size, ntype ) \
+      { \
+        size_t addr = (size_t)advance_mem; \
+        size_t aligned = (addr + 15) & ~(size_t)15; \
+        size_t next_addr; \
+        if (aligned < addr) { stbir__free_internal_mem( info ); return 0; } \
+        if (!stbir__mul_add_overflow_check(1, (size_t)(size), aligned, &next_addr)) { stbir__free_internal_mem( info ); return 0; } \
+        if ( alloced ) (ptr) = (ntype*)aligned; \
+        advance_mem = (void*)next_addr; \
+      }
 #endif
 
     STBIR__NEXT_PTR( info, sizeof( stbir__info ), stbir__info );
@@ -7367,7 +7418,8 @@ static stbir__info * stbir__alloc_internal_mem_and_build_samplers( stbir__sample
     // is this the first time through loop?
     if ( info == 0 )
     {
-      alloced_total = ( 15 + (size_t)advance_mem );
+      if ( !stbir__mul_add_overflow_check( 1, (size_t)advance_mem, 15, &alloced_total ) )
+        return 0;
       alloced = STBIR_MALLOC( alloced_total, user_data );
       if ( alloced == 0 )
         return 0;
@@ -8051,7 +8103,13 @@ static void * stbir_quick_resize_helper( const void *input_pixels , int input_w 
   void * start_ptr;
   void * free_ptr;
 
-  scanline_output_in_bytes = output_w * stbir__type_size[ data_type ] * stbir__pixel_channels[ stbir__pixel_layout_convert_public_to_internal[ pixel_layout ] ];
+  {
+    size_t scanline_output;
+    if ( !stbir__mul_add_overflow_check( (size_t)output_w, (size_t)stbir__type_size[ data_type ] * stbir__pixel_channels[ stbir__pixel_layout_convert_public_to_internal[ pixel_layout ] ], 0, &scanline_output ) )
+      return 0;
+    if ( scanline_output > 0x7fffffff ) return 0;
+    scanline_output_in_bytes = (int)scanline_output;
+  }
   if ( scanline_output_in_bytes == 0 )
     return 0;
 
