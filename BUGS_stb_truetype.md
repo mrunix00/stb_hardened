@@ -1,4 +1,4 @@
-## BUG-001
+## BUG-stb_truetype-001
 
 - **Library:** `stb_truetype.h`
 - **Severity:** High
@@ -21,7 +21,7 @@
 - **Status:** Invalid
 - **Notes:** Repro font from https://github.com/oneafter/1224 did not trigger a sanitizer fault in this build when exercising stbtt_GetGlyphShape on glyph 'A'.
 
-## BUG-002
+## BUG-stb_truetype-002
 
 - **Library:** `stb_truetype.h`
 - **Severity:** High
@@ -31,7 +31,7 @@
 - **Technique:** web-search
 - **Description:**
   During composite glyph processing, the code allocates
-  (num_vertices + comp_num_verts) * sizeof(stbtt_vertex) and then memcpy’s both
+  (num_vertices + comp_num_verts) * sizeof(stbtt_vertex) and then memcpy's both
   vertex arrays into the buffer. If num_vertices or comp_num_verts are derived
   from attacker-controlled font data without overflow checks, the addition or
   multiplication can overflow to a smaller allocation and subsequent memcpy
@@ -43,9 +43,9 @@
   stbtt_GetGlyphShape to trigger the memcpy into an undersized buffer.
   ```
 - **Status:** Invalid
-- **Notes:** The integer overflow requires ~32,768 composite components (each with max 65,535 points) to reach `num_vertices + comp_num_verts > INT_MAX`. The composite glyph handler re-allocates and copies all accumulated vertices per component (O(n²)), making this impractical to trigger dynamically on 64-bit systems. On 32-bit, `(num_vertices+comp_num_verts)*sizeof(stbtt_vertex)` can wrap in 32-bit `size_t` arithmetic at ~4,681 components, but 32-bit toolchain is unavailable on this system. The test at `tests/bug_002.c` confirms the composite glyph path works correctly for moderate inputs (up to 500 components × 65,536 vertices).
+- **Notes:** The integer overflow requires ~32,768 composite components (each with max 65,535 points) to reach `num_vertices + comp_num_verts > INT_MAX`. The composite glyph handler re-allocates and copies all accumulated vertices per component (O(n²)), making this impractical to trigger dynamically on 64-bit systems. On 32-bit, `(num_vertices+comp_num_verts)*sizeof(stbtt_vertex)` can wrap in 32-bit `size_t` arithmetic at ~4,681 components, but 32-bit toolchain is unavailable on this system. The test at `tests/bug_stb_truetype_002.c` confirms the composite glyph path works correctly for moderate inputs (up to 500 components × 65,536 vertices).
 
-## BUG-003
+## BUG-stb_truetype-003
 
 - **Library:** `stb_truetype.h`
 - **Severity:** High
@@ -60,13 +60,13 @@
   leading to stack exhaustion and a crash.
 - **Reproduction sketch:**
   ```text
-  Build and run the harness from tests/bug_003.c with argument "cycle" to
+  Build and run the harness from tests/bug_stb_truetype_003.c with argument "cycle" to
   generate a self-referential composite glyph in-memory and trigger recursion.
   ```
 - **Status:** Patched
 - **Fix:** Add a recursion depth guard in stbtt__GetGlyphShapeTT and thread depth into recursive composite glyph calls to prevent infinite recursion (stb_truetype.h:1674, 1684, 1859, 2300).
 
-## BUG-004
+## BUG-stb_truetype-004
 
 - **Library:** `stb_truetype.h`
 - **Severity:** High
@@ -82,14 +82,14 @@
   scanning table directory entries.
 - **Reproduction sketch:**
   ```c
-  // Compile tests/bug_004.c with ASan/UBSan and run it. The embedded 16-byte
+  // Compile tests/bug_stb_truetype_004.c with ASan/UBSan and run it. The embedded 16-byte
   // PoC from nothings/stb#866 triggers an OOB read in stbtt__find_table before
   // the fix.
   ```
 - **Status:** Patched
 - **Fix:** Add an early `stbtt__isfont(data + fontstart)` check in `stbtt_InitFont_internal` before table-directory scans (stb_truetype.h:1392).
 
-## BUG-005
+## BUG-stb_truetype-005
 
 - **Library:** `stb_truetype.h`
 - **Severity:** High
@@ -107,13 +107,13 @@
   before the ASan heap write when UBSan is configured to halt immediately.
 - **Reproduction sketch:**
   ```c
-  // Compile tests/bug_005.c with ASan/UBSan and run it. The embedded PoC font
+  // Compile tests/bug_stb_truetype_005.c with ASan/UBSan and run it. The embedded PoC font
   // from nothings/stb#1953 triggers an atlas-buffer heap write before the fix.
   ```
 - **Status:** Patched
 - **Fix:** Validate padded pack rectangles before rendering and clamp non-positive/non-finite raster coverage before int conversion (stb_truetype.h:3375-3380, 4245-4249).
 
-## BUG-006
+## BUG-stb_truetype-006
 
 - **Library:** `stb_truetype.h`
 - **Severity:** High
@@ -130,33 +130,14 @@
   allocation.
 - **Reproduction sketch:**
   ```c
-  // Compile tests/bug_006.c with ASan/UBSan and run it. The generated in-memory
+  // Compile tests/bug_stb_truetype_006.c with ASan/UBSan and run it. The generated in-memory
   // font has one simple glyph whose endpoint says 10001 points but whose glyf
   // data is truncated after two point-data bytes.
   ```
 - **Status:** Patched
 - **Fix:** Track the simple glyph end offset from `loca` and reject glyphs whose flag or coordinate reads would pass that boundary (stb_truetype.h:1623-1631, 1691-1779, 1840-1845).
 
-## Session Summary — 2026-05-26
-
-| Bug ID | Severity | Class | Status | Notes |
-|--------|----------|-------|--------|-------|
-| BUG-001 | High | Heap Buffer Overflow (OOB Read) | Invalid | Repro input did not trigger sanitizer in this build |
-| BUG-002 | High | Integer Overflow → Heap Buffer Overflow (Write) | Invalid | Overflow requires ~32,768 components (impractical O(n²)); 32-bit only for heap overflow |
-| BUG-003 | High | Stack Overflow (Unbounded Recursion) | Patched | Added recursion depth guard in composite glyph path |
-
-## Session Summary — 2026-05-28
-
-| Bug ID | Severity | Class | Status | Notes |
-|--------|----------|-------|--------|-------|
-| BUG-001 | High | Heap Buffer Overflow (OOB Read) | Invalid | Previously invalid; unchanged |
-| BUG-002 | High | Integer Overflow → Heap Buffer Overflow (Write) | Invalid | Previously invalid; unchanged |
-| BUG-003 | High | Stack Overflow (Unbounded Recursion) | Patched | Regression test still passes |
-| BUG-004 | High | Heap Buffer Overflow (OOB Read) | Patched | Fixed at stb_truetype.h:1392 |
-| BUG-005 | High | Heap Buffer Overflow (Write) | Patched | Fixed at stb_truetype.h:3375-3380 and 4245-4249 |
-| BUG-006 | High | Heap Buffer Overflow (OOB Read) | Patched | Fixed at stb_truetype.h:1623-1631, 1691-1779, 1840-1845 |
-
-## BUG-007
+## BUG-stb_truetype-007
 
 - **Library:** `stb_truetype.h`
 - **Severity:** High
@@ -179,7 +160,7 @@
 - **Status:** Patched
 - **Fix:** Implement `stbtt__get_table_size` to retrieve the actual table size from the font directory and use it in `stbtt_InitFont_internal`.
 
-## BUG-008
+## BUG-stb_truetype-008
 
 - **Library:** `stb_truetype.h`
 - **Severity:** Medium
@@ -200,155 +181,7 @@
 - **Status:** Patched
 - **Fix:** Removed `STBTT_assert(0)` in `stbtt__cff_int` to allow graceful failure (returning 0).
 
-## Session Summary — 2026-05-30
-
-| Bug ID | Severity | Class | Status | Notes |
-|--------|----------|-------|--------|-------|
-| BUG-007 | High | Heap Buffer Overflow (OOB Read) | Patched | Replaced 512MB hardcoded size with actual table size |
-| BUG-008 | Medium | Denial of Service (Assertion Failure) | Patched | Removed STBTT_assert(0) in stbtt__cff_int |
-
-## BUG-009
-
-- **Library:** `stb_image_resize2.h`
-- **Severity:** High
-- **Class:** Crash / Denial of Service
-- **Location:** `stb_image_resize2.h:6242`
-- **Source:** https://github.com/nothings/stb/issues/1678
-- **Technique:** web-search
-- **Description:**
-  Proactively hardened point sampling logic to use a specialized fast path and
-  forced coefficient width of 1, preventing potential mismatches with gathered
-  resample routines that might lead to crashes or out-of-bounds access.
-- **Reproduction sketch:**
-  ```c
-  stbir_resize(input, 232, 232, 0, output, 302, 302, 0, STBIR_RGBA, STBIR_TYPE_UINT8, STBIR_EDGE_CLAMP, STBIR_FILTER_POINT_SAMPLE);
-  ```
-- **Status:** Patched
-- **Fix:** Added specialized point sampling path in stbir__resample_horizontal_gather and forced coefficient width to 1 in stbir__get_coefficient_width.
-
-## BUG-010
-
-- **Library:** `stb_image_resize2.h`
-- **Severity:** High
-- **Class:** Integer Overflow → Heap Buffer Overflow
-- **Location:** `stb_image_resize2.h:7125-7370`
-- **Source:** static-analysis
-- **Technique:** static-analysis
-- **Description:**
-  In `stbir__alloc_internal_mem_and_build_samplers`, multiple `size_t`
-  calculations for buffer sizes (`decode_buffer_size`, `ring_buffer_size`, etc.)
-  and the total allocation size (`alloced_total`) did not check for integer
-  overflow.
-- **Reproduction sketch:**
-  ```c
-  // Request a resize with dimensions that make (w * h * channels * sizeof(float)) overflow size_t.
-  stbir_resize(input, 1, 1, 0, NULL, 0x40000001, 10, 0, STBIR_RGBA, STBIR_TYPE_UINT8, STBIR_EDGE_CLAMP, STBIR_FILTER_DEFAULT);
-  ```
-- **Status:** Patched
-- **Fix:** Implemented stbir__mul_add_overflow_check and applied it to all critical allocation size calculations.
-
-## Session Summary — 2026-05-28 (Session 2)
-
-| Bug ID | Severity | Class | Status | Notes |
-|--------|----------|-------|--------|-------|
-| BUG-009 | High | Crash / Denial of Service | Patched | Proactively hardened point sampling path |
-| BUG-010 | High | Integer Overflow | Patched | Added overflow checks to allocation logic |
-
-## BUG-011
-
-- **Library:** `stb_image.h`
-- **Severity:** High
-- **Class:** Integer Overflow -> Heap Buffer Overflow
-- **Location:** `stb_image.h:7010-7015`
-- **Source:** static-analysis
-- **Technique:** static-analysis
-- **Description:**
-  In `stbi__load_gif_main`, the allocation for the multi-frame buffer (`out`) and
-  the `delays` array uses `stbi__malloc(layers * stride)` and
-  `stbi__malloc(layers * sizeof(int))` respectively. As the number of layers
-  increases during the decoding of an animated GIF, these multiplications can
-  overflow a 32-bit signed integer, leading to a small allocation and a
-  subsequent heap buffer overflow when the frame data is copied or the delays
-  are written.
-- **Reproduction sketch:**
-  ```c
-  // Provide a GIF with a very large number of frames such that layers * stride overflows.
-  // Call stbi_load_gif_from_memory.
-  ```
-- **Status:** Patched
-- **Fix:** Added overflow checks for multi-frame GIF allocations in `stbi__load_gif_main` using `stbi__mad2sizes_valid` and `stbi__malloc_mad2` (stb_image.h:6994-7023).
-
-## BUG-012
-
-- **Library:** `stb_image.h`
-- **Severity:** Medium
-- **Class:** OOB Read / Denial of Service
-- **Location:** `stb_image.h:6654-6689`
-- **Source:** https://github.com/nothings/stb/issues/1558
-- **Technique:** web-search
-- **Description:**
-  The GIF decoder's `stbi__out_gif_code` function uses recursion to decode
-  LZW codes. A deeply nested or circular LZW prefix chain can lead to excessive
-  recursion, potentially causing a stack overflow.
-- **Reproduction sketch:**
-  ```c
-  // Provide a GIF with a malicious LZW stream where codes point to themselves
-  // or form a long chain.
-  ```
-- **Status:** Patched
-- **Fix:** Added a recursion depth limit (256) to `stbi__out_gif_code` and tracked it in the `stbi__gif` struct (stb_image.h:6575, 6662-6667).
-
-## BUG-013
-
-- **Library:** `stb_image.h`
-- **Severity:** High
-- **Class:** Integer Overflow -> Heap Buffer Overflow
-- **Location:** `stb_image.h:6204`
-- **Source:** static-analysis
-- **Technique:** static-analysis
-- **Description:**
-  In the PSD decoder, the allocation for the output buffer `out = stbi__malloc(4 * w*h)`
-  does not use an overflow-checked multiplication helper, unlike other formats.
-  While there is an earlier check `stbi__mad3sizes_valid(4, w, h, 0)`, it is only
-  applied in one branch, and a malformed PSD might bypass it or trigger the
-  overflow in the unprotected `stbi__malloc` call.
-- **Reproduction sketch:**
-  ```c
-  // Provide a PSD with dimensions that make 4 * w * h overflow 32-bit int.
-  ```
-- **Status:** Invalid
-- **Reason:** Already protected by stbi__mad3sizes_valid check earlier in the function.
-
-## BUG-014
-
-- **Library:** `stb_image.h`
-- **Severity:** High
-- **Class:** Integer Overflow -> Heap Buffer Overflow
-- **Location:** `stb_image.h:6793-6795`
-- **Source:** static-analysis
-- **Technique:** static-analysis
-- **Description:**
-  In `stbi__gif_load_next`, the internal buffers `g->out`, `g->background`,
-  and `g->history` are allocated using `stbi__malloc(4 * pcount)` or
-  `stbi__malloc(pcount)`. If the GIF width and height are large, `4 * pcount`
-  can overflow a signed 32-bit integer, leading to undersized allocations.
-- **Reproduction sketch:**
-  ```c
-  // Provide a GIF with dimensions such that 4 * width * height overflows.
-  ```
-- **Status:** Invalid
-- **Reason:** Already protected by stbi__mad3sizes_valid check earlier in the function.
-
-## Session Summary — 2026-05-29
-
-| Bug ID | Severity | Class | Status | Notes |
-|--------|----------|-------|--------|-------|
-| BUG-011 | High | Integer Overflow | Patched | Fixed at stb_image.h:6994-7023 |
-| BUG-012 | Medium | Stack Overflow | Patched | Fixed at stb_image.h:6575, 6662-6667 |
-| BUG-013 | High | Integer Overflow | Invalid | Already protected by stbi__mad3sizes_valid |
-| BUG-014 | High | Integer Overflow | Invalid | Already protected by stbi__mad3sizes_valid |
-
-## BUG-015
+## BUG-stb_truetype-009
 
 - **Library:** `stb_truetype.h`
 - **Severity:** High
@@ -368,8 +201,34 @@
 - **Status:** Patched
 - **Fix:** Added integer overflow guard (`dirsize / 16 != num_tables`) before directory iteration in `stbtt__find_table` and `stbtt__get_table_size`, plus a hard cap limiting table directory entries to 256 (`dirsize > 4096 → num_tables = 256`) to prevent unbounded iteration on large `num_tables` values (stb_truetype.h:1308-1310, 1388-1390).
 
+## Session Summary — 2026-05-26
+
+| Bug ID | Severity | Class | Status | Notes |
+|--------|----------|-------|--------|-------|
+| BUG-stb_truetype-001 | High | Heap Buffer Overflow (OOB Read) | Invalid | Repro input did not trigger sanitizer in this build |
+| BUG-stb_truetype-002 | High | Integer Overflow → Heap Buffer Overflow (Write) | Invalid | Overflow requires ~32,768 components (impractical O(n²)); 32-bit only for heap overflow |
+| BUG-stb_truetype-003 | High | Stack Overflow (Unbounded Recursion) | Patched | Added recursion depth guard in composite glyph path |
+
+## Session Summary — 2026-05-28
+
+| Bug ID | Severity | Class | Status | Notes |
+|--------|----------|-------|--------|-------|
+| BUG-stb_truetype-001 | High | Heap Buffer Overflow (OOB Read) | Invalid | Previously invalid; unchanged |
+| BUG-stb_truetype-002 | High | Integer Overflow → Heap Buffer Overflow (Write) | Invalid | Previously invalid; unchanged |
+| BUG-stb_truetype-003 | High | Stack Overflow (Unbounded Recursion) | Patched | Regression test still passes |
+| BUG-stb_truetype-004 | High | Heap Buffer Overflow (OOB Read) | Patched | Fixed at stb_truetype.h:1392 |
+| BUG-stb_truetype-005 | High | Heap Buffer Overflow (Write) | Patched | Fixed at stb_truetype.h:3375-3380 and 4245-4249 |
+| BUG-stb_truetype-006 | High | Heap Buffer Overflow (OOB Read) | Patched | Fixed at stb_truetype.h:1623-1631, 1691-1779, 1840-1845 |
+
 ## Session Summary — 2026-05-30
 
 | Bug ID | Severity | Class | Status | Notes |
 |--------|----------|-------|--------|-------|
-| BUG-015 | High | Out-of-Bounds Read | Patched | Fixed at stb_truetype.h:1308-1310, 1388-1390 |
+| BUG-stb_truetype-007 | High | Heap Buffer Overflow (OOB Read) | Patched | Replaced 512MB hardcoded size with actual table size |
+| BUG-stb_truetype-008 | Medium | Denial of Service (Assertion Failure) | Patched | Removed STBTT_assert(0) in stbtt__cff_int |
+
+## Session Summary — 2026-05-30
+
+| Bug ID | Severity | Class | Status | Notes |
+|--------|----------|-------|--------|-------|
+| BUG-stb_truetype-009 | High | Out-of-Bounds Read | Patched | Fixed at stb_truetype.h:1308-1310, 1388-1390 |

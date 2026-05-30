@@ -7,7 +7,8 @@ endif
 export CCACHE_DISABLE := 1
 TEST_DIR := $(patsubst %/,%,$(dir $(lastword $(MAKEFILE_LIST))))
 ROOT ?= $(TEST_DIR)/..
-BUILD_DIR ?= $(ROOT)/build/tests
+BUG_BIN_DIR ?= $(TEST_DIR)/bin
+BUILD_DIR ?= $(BUG_BIN_DIR)
 STB_INCLUDE_DIR ?= $(ROOT)
 SANITIZERS ?= address,undefined
 COMMON_WARNINGS ?= -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers

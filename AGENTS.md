@@ -34,8 +34,8 @@ Harden stb_truetype.h — let the agent pick the technique.
 
 | File | Written by | Purpose |
 |---|---|---|
-| `BUGS.md` | Phase 1 | Catalogues every discovered issue. |
-| `tests/bug_<NNN>.c` | Phase 2 | Self-contained test that reproduces and later validates the fix for `BUG-<NNN>`. |
+| `BUGS_<library>.md` | Phase 1 | Catalogues every discovered issue for a given library. |
+| `tests/bug_<library>_<NNN>.c` | Phase 2 | Self-contained test that reproduces and later validates the fix for `BUG-<library>-<NNN>`. |
 
 All output files must be created relative to the working directory of the session.
 
@@ -43,12 +43,13 @@ All output files must be created relative to the working directory of the sessio
 
 ## Session Start — State Check
 
-Before doing anything else, the agent must check whether `BUGS.md` already exists for the target library and contains entries with status `Unvalidated` that were discovered using the specified (or chosen) technique.
+Before doing anything else, the agent must check whether `BUGS_<library>.md` already exists for the target library and contains entries with status `Unvalidated` that were discovered using the specified (or chosen) technique.
 
 ```
-if BUGS.md exists AND contains Unvalidated entries for LIBRARY discovered via TECHNIQUE:
+if BUGS_<library>.md exists AND contains Unvalidated entries for LIBRARY discovered via TECHNIQUE:
     → Skip Phase 1 entirely. Go to "Resuming from existing bugs" below.
 else:
+    → Check whether BUGS.md (legacy monolithic file) exists with relevant entries; if so, migrate them.
     → Run Phase 1 normally.
 ```
 
@@ -59,27 +60,27 @@ The agent announces how many `Unvalidated` entries it found and which bug to wor
 **When `AUTO_PROGRESS: true`:**
 > The agent silently picks the highest-severity unvalidated bug and proceeds directly to Phase 2 for that bug, emitting only a one-line status message:
 > ```
-> Resuming session. Picked BUG-<NNN> (<severity> — <one-line description>). Starting validation.
+> Resuming session. Picked BUG-<library>-<NNN> (<severity> — <one-line description>). Starting validation.
 > ```
 
 **When `AUTO_PROGRESS: false`:**
 > The agent lists all `Unvalidated` entries and asks the user to choose:
 > ```
 > Found N unvalidated bugs from a previous discovery run:
->   [1] BUG-001 — High   — Integer overflow in image width calculation
->   [2] BUG-003 — Medium — Unchecked malloc return in font loader
+>   [1] BUG-<library>-001 — High   — Integer overflow in image width calculation
+>   [2] BUG-<library>-003 — Medium — Unchecked malloc return in font loader
 >   ...
 >   [D] Run discovery instead to find new bugs
 >
 > Which bug should we validate next? (enter a number or D)
 > ```
-> If the user picks `D`, the agent runs Phase 1 normally and appends any new findings to `BUGS.md`.
+> If the user picks `D`, the agent runs Phase 1 normally and appends any new findings to `BUGS_<library>.md`.
 
 ---
 
 ## Phase 1 — Discovery
 
-**Goal:** Identify as many potential security issues as possible in the target library and record all of them in `BUGS.md`. Discovery is exhaustive — the agent documents everything it finds before the session moves on.
+**Goal:** Identify as many potential security issues as possible in the target library and record all of them in `BUGS_<library>.md`. Discovery is exhaustive — the agent documents everything it finds before the session moves on.
 
 The agent selects (or is told) one of three techniques:
 
@@ -109,12 +110,12 @@ The agent selects (or is told) one of three techniques:
    - Reachable `assert`s that should be hard errors.
 3. Annotate each finding with file name, line number(s), and a brief explanation.
 
-### `BUGS.md` entry format
+### `BUGS_<library>.md` entry format
 
 Each entry must follow this template exactly. Every distinct root cause gets its own entry — the agent must not skip or merge entries to keep the list short.
 
 ```markdown
-## BUG-<NNN>
+## BUG-<library>-<NNN>
 
 - **Library:** `<header filename>`
 - **Severity:** Critical | High | Medium | Low | Informational
@@ -132,18 +133,18 @@ Each entry must follow this template exactly. Every distinct root cause gets its
 
 ### End of Phase 1
 
-After all findings are written to `BUGS.md`, the agent reports the count and pauses:
+After all findings are written to `BUGS_<library>.md`, the agent reports the count and pauses:
 
 **`AUTO_PROGRESS: false`:**
 ```
-Phase 1 complete. Documented N potential vulnerabilities in BUGS.md.
+Phase 1 complete. Documented N potential vulnerabilities in BUGS_<library>.md.
 Awaiting your go-ahead to begin Phase 2 (Validation).
-You can also review BUGS.md and remove any entries you do not want validated before confirming.
+You can also review BUGS_<library>.md and remove any entries you do not want validated before confirming.
 ```
 
 **`AUTO_PROGRESS: true`:**
 ```
-Phase 1 complete. Documented N potential vulnerabilities in BUGS.md.
+Phase 1 complete. Documented N potential vulnerabilities in BUGS_<library>.md.
 Picking highest-severity entry to validate first.
 ```
 
@@ -153,12 +154,12 @@ Picking highest-severity entry to validate first.
 
 **Goal:** Confirm that a **single chosen bug** is a real, reproducible issue and not a false positive, by implementing and running an automated test against the unpatched library.
 
-1. Implement a self-contained test in `tests/bug_<NNN>.c` that:
+1. Implement a self-contained test in `tests/bug_<library>_<NNN>.c` that:
    - Sets up the minimal conditions required to trigger the bug.
    - Is expected to crash, produce a sanitizer report, or return an incorrect result when the bug is present.
    - Passes cleanly (exit 0, no sanitizer output) once the bug is fixed.
 2. Compile and run the test **against the unpatched library** with `-fsanitize=address,undefined` (add `-fsanitize=memory` where the toolchain supports it):
-   - Test **fails as expected** → update the entry's status in `BUGS.md` to `Validated`. Proceed to Phase 3 immediately.
+   - Test **fails as expected** → update the entry's status in `BUGS_<library>.md` to `Validated`. Proceed to Phase 3 immediately.
    - Test **passes** (no fault observed) → update status to `Invalid` and record a brief explanation of why the bug could not be reproduced (see [Bug statuses](#bug-statuses)). The agent then returns to the session start state to pick the next unvalidated bug.
 
 > Validation is strictly per-bug. Do not attempt to validate multiple bugs in the same Phase 2 run.
@@ -170,12 +171,12 @@ Picking highest-severity entry to validate first.
 **Goal:** Fix the single `Validated` bug from Phase 2 with the smallest correct change possible, then confirm the fix passes the test written in Phase 2.
 
 1. Apply the most minimal patch possible directly to the target library source file — change only the exact lines that introduce or permit the vulnerability. A one-line fix is preferred over a multi-line fix; a multi-line fix is preferred over a structural refactor. Do not rename variables, reformat code, or adjust anything outside the direct fix, even if the surrounding code is of poor quality.
-2. Re-run `tests/bug_<NNN>.c` against the patched library:
-   - Test **passes** → update the entry status in `BUGS.md` to `Patched`. Add a `**Fix:**` field to the entry with a one-line rationale and the exact lines changed.
+2. Re-run `tests/bug_<library>_<NNN>.c` against the patched library:
+   - Test **passes** → update the entry status in `BUGS_<library>.md` to `Patched`. Add a `**Fix:**` field to the entry with a one-line rationale and the exact lines changed.
    - Test **still fails** → the patch is incorrect. Revise and retry. Do not mark the bug as `Patched` until the test passes cleanly.
 3. Run any previously-passing tests in `tests/` to check for regressions. If a regression is found, fix it before proceeding.
 
-> If fixing this bug reveals or depends on another bug in `BUGS.md`, note the relationship explicitly on both entries.
+> If fixing this bug reveals or depends on another bug in `BUGS_<library>.md`, note the relationship explicitly on both entries.
 
 ### After patching
 
@@ -189,7 +190,7 @@ When no `Unvalidated` entries remain, the agent prints a final session summary (
 
 ## Bug Statuses
 
-The `Status` field on each `BUGS.md` entry follows this state machine:
+The `Status` field on each `BUGS_<library>.md` entry follows this state machine:
 
 ```
 Unvalidated
@@ -210,18 +211,35 @@ Unvalidated
 
 ---
 
+## Commit Message Format
+
+When committing a fix, the message must follow the pattern:
+
+```
+<library>: <fix>
+```
+
+Where `<library>` is the short library name (e.g. `stb_truetype`, `stb_image`, `stb_image_resize2`) and `<fix>` is a concise description of the change.
+
+Example:
+```
+stb_truetype: add recursion depth guard in composite glyph path
+```
+
+---
+
 ## Session Summary
 
-Appended to `BUGS.md` at the end of each session (or when no `Unvalidated` entries remain):
+Appended to `BUGS_<library>.md` at the end of each session (or when no `Unvalidated` entries remain):
 
 ```markdown
 ## Session Summary — <date>
 
 | Bug ID | Severity | Class | Status | Notes |
 |--------|----------|-------|--------|-------|
-| BUG-001 | High | Integer Overflow | Patched | Fixed at stb_image.h:1234 |
-| BUG-002 | Medium | OOB Read | Invalid | Could not reproduce; bounds check already present |
-| BUG-003 | High | Heap Buffer Overflow | Unvalidated | Not reached this session |
+| BUG-<library>-001 | High | Integer Overflow | Patched | Fixed at stb_image.h:1234 |
+| BUG-<library>-002 | Medium | OOB Read | Invalid | Could not reproduce; bounds check already present |
+| BUG-<library>-003 | High | Heap Buffer Overflow | Unvalidated | Not reached this session |
 ```
 
 ---
@@ -232,7 +250,7 @@ Appended to `BUGS.md` at the end of each session (or when no `Unvalidated` entri
 - **No false fixes.** Do not patch a bug that has not reached `Validated` status.
 - **Minimal diffs.** Each patch must touch only the exact lines that introduce or permit the vulnerability. Prefer a one-line fix over a multi-line fix, and a multi-line fix over any structural change. No reformatting, no renames, no opportunistic cleanups — even if the surrounding code is poor.
 - **Preserve API compatibility.** Public function signatures must not change unless the signature itself is the vulnerability (e.g. a missing `size` parameter).
-- **Document everything.** Every decision — why a bug was marked `Invalid`, why a particular fix strategy was chosen — must be recorded in `BUGS.md`.
+- **Document everything.** Every decision — why a bug was marked `Invalid`, why a particular fix strategy was chosen — must be recorded in `BUGS_<library>.md`.
 - **Sanitizer coverage is mandatory.** All tests must be compiled and run with ASan + UBSan enabled.
 - **Do not silence warnings.** Fixes must not introduce `#pragma` suppressions or cast-away-const tricks to hide compiler diagnostics.
 - **Patch source files directly.** Do not create `patches/` copies; the target library file itself must reflect all fixes applied so far in the session.

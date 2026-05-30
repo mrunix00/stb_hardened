@@ -43,7 +43,7 @@ int main() {
     cff[10] = 0; cff[11] = 1; // count = 1
     cff[12] = 1;              // offSize = 1
     cff[13] = 1; cff[14] = 3; // offsets. Data is 2 bytes.
-    // topdict data: Trigger BUG-008
+    // topdict data: Trigger BUG-stb_truetype-008
     cff[15] = 255; // Invalid operand byte for stbtt__cff_int (default case triggers STBTT_assert(0))
     cff[16] = 17;  // Key (doesn't matter)
 

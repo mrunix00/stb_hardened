@@ -31,7 +31,7 @@ int main() {
     int x, y, z, comp;
     int *delays = NULL;
 
-    printf("Starting BUG-011 validation with %d layers of size 23170x23170...\n", layers);
+    printf("Starting BUG-stb_image-001 validation with %d layers of size 23170x23170...\n", layers);
     // Passing &delays directly.
     unsigned char *data = stbi_load_gif_from_memory(gif, (int)gif_size, &delays, &x, &y, &z, &comp, 0);
 

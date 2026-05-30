@@ -1,4 +1,4 @@
-// BUG-015: OOB read in stbtt__find_table / stbtt_InitFont_internal
+// BUG-stb_truetype-009: OOB read in stbtt__find_table / stbtt_InitFont_internal
 // CVE-2026-5314
 //
 // stbtt__find_table reads num_tables from the font offset table and
@@ -11,8 +11,8 @@
 // With the fix:    loop bounds to 256 entries, 4108-byte buffer
 //                  is sufficient, function returns 0 safely.
 //
-// Compile: clang -fsanitize=address,undefined -g -O0 tests/bug_015.c -o tests/bug_015 -lm
-// Run:     tests/bug_015
+// Compile: clang -fsanitize=address,undefined -g -O0 tests/bug_stb_truetype_009.c -o tests/bug_stb_truetype_009 -lm
+// Run:     tests/bug_stb_truetype_009
 
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "../stb_truetype.h"
@@ -41,6 +41,6 @@ int main(void)
 
    // If we reach here, no OOB was detected → the cap prevented
    // the unbounded loop.
-   printf("PASS: BUG-015 fix verified (no OOB with capped directory)\n");
+   printf("PASS: BUG-stb_truetype-009 fix verified (no OOB with capped directory)\n");
    return 0;
 }

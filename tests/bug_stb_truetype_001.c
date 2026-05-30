@@ -22,7 +22,7 @@ static unsigned char* load_file(const char *path, size_t *out_size) {
 }
 
 int main(int argc, char **argv) {
-    const char *path = (argc > 1) ? argv[1] : "tests/bug_001_hbf1.ttf";
+    const char *path = (argc > 1) ? argv[1] : "tests/bug_stb_truetype_001_hbf1.ttf";
     size_t sz = 0;
     unsigned char *buf = load_file(path, &sz);
     if (!buf) {

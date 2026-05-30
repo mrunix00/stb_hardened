@@ -25,7 +25,7 @@ void test_recursion() {
     g.codes[0].prefix = -1;
     g.codes[0].suffix = 0;
 
-    printf("Calling stbi__out_gif_code with depth 4095...\n");
+    printf("Calling stbi__out_gif_code with depth 4095 (BUG-stb_image-002)...\n");
     stbi__out_gif_code(&g, 4095);
     printf("Returned successfully from long chain\n");
 
