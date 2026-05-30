@@ -176,7 +176,7 @@ static int stb_easy_font_draw_segs(float x, float y, unsigned char *segs, int nu
     for (i=0; i < num_segs; ++i) {
         int len = segs[i] & 7;
         x += (float) ((segs[i] >> 3) & 1);
-        if (len && offset+64 <= vbuf_size) {
+        if (len && offset <= vbuf_size - 64) {
             float y0 = y + (float) (segs[i]>>4);
             for (j=0; j < 4; ++j) {
                 * (float *) (vbuf+offset+0) = x  + (j==1 || j==2 ? (vertical ? 1 : len) : 0);
@@ -209,14 +209,14 @@ static int stb_easy_font_print(float x, float y, char *text, unsigned char color
         if (*text == '\n') {
             y += 12;
             x = start_x;
-        } else {
-            unsigned char advance = stb_easy_font_charinfo[*text-32].advance;
+        } else if ((unsigned char) *text >= 32 && (unsigned char) *text <= 126) {
+            unsigned char advance = stb_easy_font_charinfo[(unsigned char)*text-32].advance;
             float y_ch = advance & 16 ? y+1 : y;
             int h_seg, v_seg, num_h, num_v;
-            h_seg = stb_easy_font_charinfo[*text-32  ].h_seg;
-            v_seg = stb_easy_font_charinfo[*text-32  ].v_seg;
-            num_h = stb_easy_font_charinfo[*text-32+1].h_seg - h_seg;
-            num_v = stb_easy_font_charinfo[*text-32+1].v_seg - v_seg;
+            h_seg = stb_easy_font_charinfo[(unsigned char)*text-32  ].h_seg;
+            v_seg = stb_easy_font_charinfo[(unsigned char)*text-32  ].v_seg;
+            num_h = stb_easy_font_charinfo[(unsigned char)*text-32+1].h_seg - h_seg;
+            num_v = stb_easy_font_charinfo[(unsigned char)*text-32+1].v_seg - v_seg;
             offset = stb_easy_font_draw_segs(x, y_ch, &stb_easy_font_hseg[h_seg], num_h, 0, c, vbuf, vbuf_size, offset);
             offset = stb_easy_font_draw_segs(x, y_ch, &stb_easy_font_vseg[v_seg], num_v, 1, c, vbuf, vbuf_size, offset);
             x += advance & 15;
@@ -235,8 +235,8 @@ static int stb_easy_font_width(char *text)
         if (*text == '\n') {
             if (len > max_len) max_len = len;
             len = 0;
-        } else {
-            len += stb_easy_font_charinfo[*text-32].advance & 15;
+        } else if ((unsigned char) *text >= 32 && (unsigned char) *text <= 126) {
+            len += stb_easy_font_charinfo[(unsigned char)*text-32].advance & 15;
             len += stb_easy_font_spacing_val;
         }
         ++text;
@@ -253,7 +253,7 @@ static int stb_easy_font_height(char *text)
         if (*text == '\n') {
             y += 12;
             nonempty_line = 0;
-        } else {
+        } else if ((unsigned char) *text >= 32 && (unsigned char) *text <= 126) {
             nonempty_line = 1;
         }
         ++text;
