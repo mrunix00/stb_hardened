@@ -715,6 +715,7 @@ struct stbtt_fontinfo
    void           * userdata;
    unsigned char  * data;              // pointer to .ttf file
    int              fontstart;         // offset of start of font
+   int              data_len;          // length of data (0 = unknown, no bounds checking)
 
    int numGlyphs;                     // number of glyphs, needed for range checking
 
@@ -731,6 +732,7 @@ struct stbtt_fontinfo
 };
 
 STBTT_DEF int stbtt_InitFont(stbtt_fontinfo *info, const unsigned char *data, int offset);
+STBTT_DEF int stbtt_InitFontEx(stbtt_fontinfo *info, const unsigned char *data, int offset, int data_len);
 // Given an offset into the file that defines a font, this function builds
 // the necessary cached info for the rest of the system. You must allocate
 // the stbtt_fontinfo yourself, and stbtt_InitFont will fill it out. You don't
@@ -1302,14 +1304,24 @@ static int stbtt__isfont(stbtt_uint8 *font)
 }
 
 // @OPTIMIZE: binary search
-static stbtt_uint32 stbtt__find_table(stbtt_uint8 *data, stbtt_uint32 fontstart, const char *tag)
+static stbtt_uint32 stbtt__find_table(stbtt_uint8 *data, stbtt_uint32 fontstart, const char *tag, int data_len)
 {
-   stbtt_int32 num_tables = ttUSHORT(data+fontstart+4);
+   stbtt_int32 num_tables;
    stbtt_uint32 tabledir = fontstart + 12;
-   stbtt_uint32 dirsize = (stbtt_uint32)num_tables * 16;
+   stbtt_uint32 dirsize;
    stbtt_int32 i;
+   if (data_len > 0 && (stbtt_uint32)data_len < fontstart + 6)
+      return 0;
+   num_tables = ttUSHORT(data+fontstart+4);
+   dirsize = (stbtt_uint32)num_tables * 16;
    if (dirsize / 16 != (stbtt_uint32)num_tables) return 0; // overflow
    if (dirsize > 4096) num_tables = 256; // cap unreasonably large directories
+   if (data_len > 0) {
+      stbtt_uint32 max_needed = tabledir + (stbtt_uint32)num_tables * 16;
+      if (max_needed / 16 != (stbtt_uint32)tabledir/16 + (stbtt_uint32)num_tables) return 0;
+      if ((stbtt_uint32)data_len < max_needed)
+         num_tables = (stbtt_int32)(((stbtt_uint32)data_len - tabledir) / 16);
+   }
    for (i=0; i < num_tables; ++i) {
       stbtt_uint32 loc = tabledir + 16*i;
       if (stbtt_tag(data+loc+0, tag))
@@ -1371,7 +1383,7 @@ static int stbtt__get_svg(stbtt_fontinfo *info)
 {
    stbtt_uint32 t;
    if (info->svg < 0) {
-      t = stbtt__find_table(info->data, info->fontstart, "SVG ");
+      t = stbtt__find_table(info->data, info->fontstart, "SVG ", info->data_len);
       if (t) {
          stbtt_uint32 offset = ttULONG(info->data + t + 2);
          info->svg = t + offset;
@@ -1382,14 +1394,24 @@ static int stbtt__get_svg(stbtt_fontinfo *info)
    return info->svg;
 }
 
-static stbtt_uint32 stbtt__get_table_size(stbtt_uint8 *data, stbtt_uint32 fontstart, const char *tag)
+static stbtt_uint32 stbtt__get_table_size(stbtt_uint8 *data, stbtt_uint32 fontstart, const char *tag, int data_len)
 {
-   stbtt_int32 num_tables = ttUSHORT(data+fontstart+4);
+   stbtt_int32 num_tables;
    stbtt_uint32 tabledir = fontstart + 12;
-   stbtt_uint32 dirsize = (stbtt_uint32)num_tables * 16;
+   stbtt_uint32 dirsize;
    stbtt_int32 i;
+   if (data_len > 0 && (stbtt_uint32)data_len < fontstart + 6)
+      return 0;
+   num_tables = ttUSHORT(data+fontstart+4);
+   dirsize = (stbtt_uint32)num_tables * 16;
    if (dirsize / 16 != (stbtt_uint32)num_tables) return 0; // overflow
    if (dirsize > 4096) num_tables = 256;
+   if (data_len > 0) {
+      stbtt_uint32 max_needed = tabledir + (stbtt_uint32)num_tables * 16;
+      if (max_needed / 16 != (stbtt_uint32)tabledir/16 + (stbtt_uint32)num_tables) return 0;
+      if ((stbtt_uint32)data_len < max_needed)
+         num_tables = (stbtt_int32)(((stbtt_uint32)data_len - tabledir) / 16);
+   }
    for (i=0; i < num_tables; ++i) {
       stbtt_uint32 loc = tabledir + 16*i;
       if (stbtt_tag(data+loc+0, tag))
@@ -1398,25 +1420,26 @@ static stbtt_uint32 stbtt__get_table_size(stbtt_uint8 *data, stbtt_uint32 fontst
    return 0;
 }
 
-static int stbtt_InitFont_internal(stbtt_fontinfo *info, unsigned char *data, int fontstart)
+static int stbtt_InitFont_internal(stbtt_fontinfo *info, unsigned char *data, int fontstart, int data_len)
 {
    stbtt_uint32 cmap, t;
    stbtt_int32 i,numTables;
 
    info->data = data;
    info->fontstart = fontstart;
+   info->data_len = data_len;
    info->cff = stbtt__new_buf(NULL, 0);
 
    if (!stbtt__isfont(data + fontstart)) return 0;
 
-   cmap = stbtt__find_table(data, fontstart, "cmap");       // required
-   info->loca = stbtt__find_table(data, fontstart, "loca"); // required
-   info->head = stbtt__find_table(data, fontstart, "head"); // required
-   info->glyf = stbtt__find_table(data, fontstart, "glyf"); // required
-   info->hhea = stbtt__find_table(data, fontstart, "hhea"); // required
-   info->hmtx = stbtt__find_table(data, fontstart, "hmtx"); // required
-   info->kern = stbtt__find_table(data, fontstart, "kern"); // not required
-   info->gpos = stbtt__find_table(data, fontstart, "GPOS"); // not required
+   cmap = stbtt__find_table(data, fontstart, "cmap", data_len);       // required
+   info->loca = stbtt__find_table(data, fontstart, "loca", data_len); // required
+   info->head = stbtt__find_table(data, fontstart, "head", data_len); // required
+   info->glyf = stbtt__find_table(data, fontstart, "glyf", data_len); // required
+   info->hhea = stbtt__find_table(data, fontstart, "hhea", data_len); // required
+   info->hmtx = stbtt__find_table(data, fontstart, "hmtx", data_len); // required
+   info->kern = stbtt__find_table(data, fontstart, "kern", data_len); // not required
+   info->gpos = stbtt__find_table(data, fontstart, "GPOS", data_len); // not required
 
    if (!cmap || !info->head || !info->hhea || !info->hmtx)
       return 0;
@@ -1429,13 +1452,13 @@ static int stbtt_InitFont_internal(stbtt_fontinfo *info, unsigned char *data, in
       stbtt_uint32 cstype = 2, charstrings = 0, fdarrayoff = 0, fdselectoff = 0;
       stbtt_uint32 cff;
 
-      cff = stbtt__find_table(data, fontstart, "CFF ");
+      cff = stbtt__find_table(data, fontstart, "CFF ", data_len);
       if (!cff) return 0;
 
       info->fontdicts = stbtt__new_buf(NULL, 0);
       info->fdselect = stbtt__new_buf(NULL, 0);
 
-      info->cff = stbtt__new_buf(data+cff, stbtt__get_table_size(data, fontstart, "CFF "));
+      info->cff = stbtt__new_buf(data+cff, stbtt__get_table_size(data, fontstart, "CFF ", data_len));
       b = info->cff;
 
       // read the header
@@ -1472,7 +1495,7 @@ static int stbtt_InitFont_internal(stbtt_fontinfo *info, unsigned char *data, in
       info->charstrings = stbtt__cff_get_index(&b);
    }
 
-   t = stbtt__find_table(data, fontstart, "maxp");
+   t = stbtt__find_table(data, fontstart, "maxp", data_len);
    if (t)
       info->numGlyphs = ttUSHORT(data+t+4);
    else
@@ -1483,7 +1506,19 @@ static int stbtt_InitFont_internal(stbtt_fontinfo *info, unsigned char *data, in
    // find a cmap encoding table we understand *now* to avoid searching
    // later. (todo: could make this installable)
    // the same regardless of glyph.
-   numTables = ttUSHORT(data + cmap + 2);
+    numTables = ttUSHORT(data + cmap + 2);
+   // bounds check: each encoding record is 8 bytes starting at cmap+4,
+   // so numTables must not exceed the number that fit in the cmap table
+   {
+      stbtt_uint32 cmap_length = stbtt__get_table_size(data, fontstart, "cmap", data_len);
+      if (cmap_length < 4)
+         numTables = 0;
+      else {
+         stbtt_uint32 max_records = (cmap_length - 4) / 8;
+         if ((stbtt_uint32)numTables > max_records)
+            numTables = (stbtt_int32)max_records;
+      }
+   }
    info->index_map = 0;
    for (i=0; i < numTables; ++i) {
       stbtt_uint32 encoding_record = cmap + 4 + 8 * i;
@@ -1534,6 +1569,10 @@ STBTT_DEF int stbtt_FindGlyphIndex(const stbtt_fontinfo *info, int unicode_codep
       return 0;
    } else if (format == 4) { // standard mapping for windows fonts: binary search collection of ranges
       stbtt_uint16 segcount = ttUSHORT(data+index_map+6) >> 1;
+      // bounds check: the endCount array (segcount*2 bytes starting at offset 14)
+      // must fit within the cmap subtable, otherwise the binary search reads OOB
+      if (segcount*2 + 14 > ttUSHORT(data+index_map+2))
+         return 0;
       stbtt_uint16 searchRange = ttUSHORT(data+index_map+8) >> 1;
       stbtt_uint16 entrySelector = ttUSHORT(data+index_map+10);
       stbtt_uint16 rangeShift = ttUSHORT(data+index_map+12) >> 1;
@@ -1579,6 +1618,13 @@ STBTT_DEF int stbtt_FindGlyphIndex(const stbtt_fontinfo *info, int unicode_codep
       }
    } else if (format == 12 || format == 13) {
       stbtt_uint32 ngroups = ttULONG(data+index_map+12);
+      // bounds check: group data starts at offset 16, each group is 12 bytes
+      {
+         stbtt_uint32 length = ttULONG(data+index_map+4);
+         stbtt_uint32 group_bytes = ngroups * 12;
+         if (group_bytes / 12 != ngroups) return 0; // overflow
+         if (16 + group_bytes > length) return 0;
+      }
       stbtt_int32 low,high;
       low = 0; high = (stbtt_int32)ngroups;
       // Binary search the right group.
@@ -2692,7 +2738,7 @@ STBTT_DEF void stbtt_GetFontVMetrics(const stbtt_fontinfo *info, int *ascent, in
 
 STBTT_DEF int  stbtt_GetFontVMetricsOS2(const stbtt_fontinfo *info, int *typoAscent, int *typoDescent, int *typoLineGap)
 {
-   int tab = stbtt__find_table(info->data, info->fontstart, "OS/2");
+   int tab = stbtt__find_table(info->data, info->fontstart, "OS/2", info->data_len);
    if (!tab)
       return 0;
    if (typoAscent ) *typoAscent  = ttSHORT(info->data+tab + 68);
@@ -4887,7 +4933,7 @@ STBTT_DEF const char *stbtt_GetFontNameString(const stbtt_fontinfo *font, int *l
    stbtt_int32 i,count,stringOffset;
    stbtt_uint8 *fc = font->data;
    stbtt_uint32 offset = font->fontstart;
-   stbtt_uint32 nm = stbtt__find_table(fc, offset, "name");
+   stbtt_uint32 nm = stbtt__find_table(fc, offset, "name", font->data_len);
    if (!nm) return NULL;
 
    count = ttUSHORT(fc+nm+2);
@@ -4958,11 +5004,11 @@ static int stbtt__matches(stbtt_uint8 *fc, stbtt_uint32 offset, stbtt_uint8 *nam
 
    // check italics/bold/underline flags in macStyle...
    if (flags) {
-      hd = stbtt__find_table(fc, offset, "head");
+      hd = stbtt__find_table(fc, offset, "head", 0);
       if ((ttUSHORT(fc+hd+44) & 7) != (flags & 7)) return 0;
    }
 
-   nm = stbtt__find_table(fc, offset, "name");
+   nm = stbtt__find_table(fc, offset, "name", 0);
    if (!nm) return 0;
 
    if (flags) {
@@ -5014,7 +5060,14 @@ STBTT_DEF int stbtt_GetNumberOfFonts(const unsigned char *data)
 
 STBTT_DEF int stbtt_InitFont(stbtt_fontinfo *info, const unsigned char *data, int offset)
 {
-   return stbtt_InitFont_internal(info, (unsigned char *) data, offset);
+   return stbtt_InitFont_internal(info, (unsigned char *) data, offset, 0);
+}
+
+STBTT_DEF int stbtt_InitFontEx(stbtt_fontinfo *info, const unsigned char *data, int offset, int data_len)
+{
+   if (data_len < 0)
+      return 0;
+   return stbtt_InitFont_internal(info, (unsigned char *) data, offset, data_len);
 }
 
 STBTT_DEF int stbtt_FindMatchingFont(const unsigned char *fontdata, const char *name, int flags)

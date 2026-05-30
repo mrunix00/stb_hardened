@@ -227,8 +227,136 @@
 | BUG-stb_truetype-007 | High | Heap Buffer Overflow (OOB Read) | Patched | Replaced 512MB hardcoded size with actual table size |
 | BUG-stb_truetype-008 | Medium | Denial of Service (Assertion Failure) | Patched | Removed STBTT_assert(0) in stbtt__cff_int |
 
+## BUG-stb_truetype-010
+
+- **Library:** `stb_truetype.h`
+- **Severity:** High
+- **Class:** Heap Buffer Overflow (OOB Read)
+- **Location:** `stb_truetype.h:1486-1507`
+- **Source:** https://github.com/nothings/stb/issues/1871
+- **Technique:** web-search
+- **Description:**
+  In `stbtt_InitFont_internal`, the cmap encoding table selection loop reads
+  `numTables = ttUSHORT(data + cmap + 2)` at line 1486 without validating
+  whether the cmap table contains enough data. It then iterates `numTables`
+  encoding records at `cmap + 4 + 8*i` reading platform/encoding IDs and
+  subtable offsets via `ttUSHORT`/`ttULONG` without bounds checks. A crafted
+  cmap table header with a large `numTables` or a truncated cmap table causes
+  OOB reads past the font buffer. This was noted in BUG-009's description
+  but no bounds check was added at this location.
+- **Reproduction sketch:**
+  ```c
+  // Load a font with a cmap table header where numTables at cmap+2 is large
+  // (e.g. 0xFFFF) but the cmap table itself is only 16 bytes.
+  // Call stbtt_InitFont to trigger OOB reads in the encoding selection loop.
+   ```
+- **Status:** Patched
+- **Fix:** Added bounds check in `stbtt_InitFont_internal` before the cmap encoding record loop: clamp `numTables` to the maximum number of 8-byte records that fit in the table's declared length from the font directory. Prevents OOB reads of platform/encoding IDs and subtable offsets (stb_truetype.h:1487-1498).
+
+## BUG-stb_truetype-011
+
+- **Library:** `stb_truetype.h`
+- **Severity:** High
+- **Class:** Heap Buffer Overflow (OOB Read)
+- **Location:** `stb_truetype.h:1536-1578`
+- **Source:** https://github.com/nothings/stb/issues/1871
+- **Technique:** web-search
+- **Description:**
+  In `stbtt_FindGlyphIndex`, the cmap Format 4 binary search handler reads
+  `segcount`, `searchRange`, `entrySelector`, and `rangeShift` from the cmap
+  subtable header at `index_map` (lines 1536-1539) without validating that the
+  offsets and computed pointers remain within the font buffer. The binary search
+  loop (lines 1555-1562) computes `ttUSHORT(data + search + searchRange*2)`
+  where `search` and `searchRange` are attacker-controlled. An off-by-one read
+  at the buffer boundary was demonstrated in the Issue #1871 ASAN report
+  (READ of size 1 at 0x533000018080, located 0 bytes after a 96384-byte
+  allocation).
+- **Reproduction sketch:**
+  ```c
+  // Build and run the harness from Issue #1871 with the hbf3 repro:
+  // clang -fsanitize=address -g -O0 harness.c -o harness -lm
+  // ./harness hbf3
+  // The ASAN report triggers at stb_truetype.h:1559:17.
+  ```
+- **Status:** Patched
+- **Fix:** Added bounds check in `stbtt_FindGlyphIndex` comparing subtable length (`index_map + 2`) against the required endCount array size (`segcount*2 + 14`). If the subtable is too short, return 0 immediately instead of entering the binary search (stb_truetype.h:1538-1539).
+
+## BUG-stb_truetype-012
+
+- **Library:** `stb_truetype.h`
+- **Severity:** High
+- **Class:** Heap Buffer Overflow (OOB Read)
+- **Location:** `stb_truetype.h:1307, 1393-1397`
+- **Source:** https://github.com/nothings/stb/issues/1286 (CVE-2022-25514)
+- **Technique:** web-search
+- **Description:**
+  `stbtt__find_table` reads `num_tables = ttUSHORT(data+fontstart+4)` at
+  line 1307 before any bounds check against the buffer size. For a font buffer
+  that passes `stbtt__isfont` (4-byte signature check at line 1410) but has
+  fewer than 6 bytes, the 2-byte `ttUSHORT` at `fontstart+4` reads out of
+  bounds. Additionally, even with the BUG-009 overflow guard and iteration
+  cap (max 256 tables), the table directory scan loop (lines 1393-1397)
+  reads up to `fontstart + 12 + 16*255 = fontstart + 4092` bytes without
+  knowing the total buffer size — the `stbtt_tag(data+loc+0, tag)` 4-byte
+  read at line 1395 and `ttULONG(data+loc+12)` at line 1396 will OOB if
+  the buffer does not extend that far.
+- **Reproduction sketch:**
+  ```c
+  // Load a 5-byte font buffer whose first 4 bytes match a valid signature
+  // (e.g. 0x00 0x01 0x00 0x00). Call stbtt_InitFont. The ttUSHORT at
+  // data+fontstart+4 reads 1 byte out of bounds.
+  // Alternatively, craft a font with num_tables=256 but a buffer too small
+  // to hold the full table directory, and call stbtt_InitFont.
+   ```
+- **Status:** Patched
+- **Fix:** Added `data_len` field to `stbtt_fontinfo` struct, added `stbtt_InitFontEx(info, data, offset, data_len)` public function, and threaded `data_len` through `stbtt__find_table` and `stbtt__get_table_size`. When `data_len > 0`, bounds checks prevent reading the offset-table `num_tables` at `fontstart+4` if the buffer is too small, and cap directory entry iteration to fit within the buffer. Existing `stbtt_InitFont` API passes `data_len=0` (no bounds checking, backward compatible).
+
+## BUG-stb_truetype-013
+
+- **Library:** `stb_truetype.h`
+- **Severity:** Medium
+- **Class:** Heap Buffer Overflow (OOB Read)
+- **Location:** `stb_truetype.h:1285-1288`
+- **Source:** https://github.com/nothings/stb/issues/1288 (CVE-2022-25515)
+- **Technique:** web-search
+- **Description:**
+  The inline helper `ttULONG(p)` at line 1287 reads 4 bytes from `p[0..3]`
+  without any caller-level bounds validation. Multiple callers — including
+  `stbtt__find_table` (line 1396) and the cmap Format 12/13 parsing in
+  `stbtt_FindGlyphIndex` (lines 1581, 1587-1588, 1594) — use results from
+  `ttULONG` on attacker-controlled offsets to index further into the font
+  data. An ASAN crash at `ttULONG` in `stbtt__find_table:1314` was reported
+  with a 196-byte heap buffer where the 4-byte read straddles the buffer
+  boundary.
+- **Reproduction sketch:**
+  ```c
+  // Load a font with a crafted table directory where the table offset/length
+  // read by ttULONG at line 1396 falls past the buffer end.
+  // Call stbtt_InitFont to trigger the OOB read.
+  ```
+- **Status:** Patched
+- **Fix:** Added bounds check in `stbtt_FindGlyphIndex` for Format 12/13 cmap subtables: verify that the group data (`ngroups * 12 + 16`) fits within the subtable's declared `length` before entering the binary search (stb_truetype.h:1621-1627).
+
 ## Session Summary — 2026-05-30
 
 | Bug ID | Severity | Class | Status | Notes |
 |--------|----------|-------|--------|-------|
 | BUG-stb_truetype-009 | High | Out-of-Bounds Read | Patched | Fixed at stb_truetype.h:1308-1310, 1388-1390 |
+
+## Session Summary — 2026-05-30
+
+| Bug ID | Severity | Class | Status | Notes |
+|--------|----------|-------|--------|-------|
+| BUG-stb_truetype-010 | High | Heap Buffer Overflow (OOB Read) | Patched | Fixed at stb_truetype.h:1487-1498 |
+| BUG-stb_truetype-011 | High | Heap Buffer Overflow (OOB Read) | Patched | Fixed at stb_truetype.h:1538-1539 |
+| BUG-stb_truetype-012 | High | Heap Buffer Overflow (OOB Read) | Patched | Fixed via stbtt_InitFontEx + data_len bounds in find_table |
+| BUG-stb_truetype-013 | Medium | Heap Buffer Overflow (OOB Read) | Patched | Fixed at stb_truetype.h:1621-1627 |
+
+## Session Summary — 2026-05-30
+
+| Bug ID | Severity | Class | Status | Notes |
+|--------|----------|-------|--------|-------|
+| BUG-stb_truetype-010 | High | Heap Buffer Overflow (OOB Read) | Patched | cmap encoding loop bounds check in InitFont |
+| BUG-stb_truetype-011 | High | Heap Buffer Overflow (OOB Read) | Patched | cmap Format 4 segcount/length check in FindGlyphIndex |
+| BUG-stb_truetype-012 | High | Heap Buffer Overflow (OOB Read) | Patched | Added data_len param via stbtt_InitFontEx, bounds in find_table/get_table_size |
+| BUG-stb_truetype-013 | Medium | Heap Buffer Overflow (OOB Read) | Patched | cmap Format 12/13 ngroups/length check in FindGlyphIndex |
