@@ -1306,7 +1306,10 @@ static stbtt_uint32 stbtt__find_table(stbtt_uint8 *data, stbtt_uint32 fontstart,
 {
    stbtt_int32 num_tables = ttUSHORT(data+fontstart+4);
    stbtt_uint32 tabledir = fontstart + 12;
+   stbtt_uint32 dirsize = (stbtt_uint32)num_tables * 16;
    stbtt_int32 i;
+   if (dirsize / 16 != (stbtt_uint32)num_tables) return 0; // overflow
+   if (dirsize > 4096) num_tables = 256; // cap unreasonably large directories
    for (i=0; i < num_tables; ++i) {
       stbtt_uint32 loc = tabledir + 16*i;
       if (stbtt_tag(data+loc+0, tag))
@@ -1383,7 +1386,10 @@ static stbtt_uint32 stbtt__get_table_size(stbtt_uint8 *data, stbtt_uint32 fontst
 {
    stbtt_int32 num_tables = ttUSHORT(data+fontstart+4);
    stbtt_uint32 tabledir = fontstart + 12;
+   stbtt_uint32 dirsize = (stbtt_uint32)num_tables * 16;
    stbtt_int32 i;
+   if (dirsize / 16 != (stbtt_uint32)num_tables) return 0; // overflow
+   if (dirsize > 4096) num_tables = 256;
    for (i=0; i < num_tables; ++i) {
       stbtt_uint32 loc = tabledir + 16*i;
       if (stbtt_tag(data+loc+0, tag))

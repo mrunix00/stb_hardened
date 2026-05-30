@@ -347,3 +347,29 @@
 | BUG-012 | Medium | Stack Overflow | Patched | Fixed at stb_image.h:6575, 6662-6667 |
 | BUG-013 | High | Integer Overflow | Invalid | Already protected by stbi__mad3sizes_valid |
 | BUG-014 | High | Integer Overflow | Invalid | Already protected by stbi__mad3sizes_valid |
+
+## BUG-015
+
+- **Library:** `stb_truetype.h`
+- **Severity:** High
+- **Class:** Out-of-Bounds Read
+- **Location:** `stb_truetype.h:1305-1318, 1385-1398`
+- **Source:** https://nvd.nist.gov/vuln/detail/CVE-2026-5314
+- **Technique:** web-search
+- **Description:**
+  `stbtt__find_table` reads the number of font tables (`num_tables`) from the offset table at `fontstart+4` without bounds-checking against the total buffer size. A crafted font with a valid 4-byte signature but a very small buffer can cause `num_tables` to be read from out-of-bounds memory, or an attacker-controlled large `num_tables` value in the offset table causes the table directory iteration loop to read past the buffer. The same pattern exists in the cmap table parsing loop which reads `numTables` at `cmap+2` and iterates `encoding_record` entries without checking bounds.
+- **Reproduction sketch:**
+  ```c
+  // Build and run the repro from the CVE-2026-5314 gist PoC:
+  // base64 -d poc.ttf.b64 > poc.ttf
+  // clang -fsanitize=address -g -O0 repro.c -o repro -lm
+  // ./repro poc.ttf
+  ```
+- **Status:** Patched
+- **Fix:** Added integer overflow guard (`dirsize / 16 != num_tables`) before directory iteration in `stbtt__find_table` and `stbtt__get_table_size`, plus a hard cap limiting table directory entries to 256 (`dirsize > 4096 → num_tables = 256`) to prevent unbounded iteration on large `num_tables` values (stb_truetype.h:1308-1310, 1388-1390).
+
+## Session Summary — 2026-05-30
+
+| Bug ID | Severity | Class | Status | Notes |
+|--------|----------|-------|--------|-------|
+| BUG-015 | High | Out-of-Bounds Read | Patched | Fixed at stb_truetype.h:1308-1310, 1388-1390 |
