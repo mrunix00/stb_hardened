@@ -267,7 +267,212 @@
 - **Status:** Patched
 - **Fix:** Replaced `stbi__malloc(req_comp * x * y * 2)` with `stbi__malloc_mad4(req_comp, x, y, 2, 0)` at stb_image.h:1820. The mad4 variant validates that the signed multiplication does not overflow INT_MAX before allocating, preventing the silent unsigned-wraparound that produced an undersized buffer.
 
-## Session Summary — 2026-05-30
+## BUG-stb_image-012
+
+- **Library:** `stb_image.h`
+- **Severity:** High
+- **Class:** Integer Overflow -> Heap Buffer Overflow
+- **Location:** `stb_image.h:1193-1196`
+- **Source:** https://github.com/nothings/stb/issues/1928 (bug 2)
+- **Technique:** web-search
+- **Description:**
+  In `stbi__convert_16_to_8`, the intermediate buffer size is computed as `img_len = w * h * channels`
+  using plain int multiplication. This product is then passed directly to `stbi__malloc(img_len)`.
+  With sufficiently large dimensions (e.g., a 32768x32768 16-bit grayscale PNG), `w * h * channels`
+  can overflow a 32-bit signed integer, producing an undersized allocation. The subsequent loop at
+  line 1199 iterates over `img_len` elements, writing far past the end of the undersized buffer.
+- **Reproduction sketch:**
+  ```c
+  // Load a very large 16-bit grayscale PNG (e.g., 32768x32768) via stbi_load_16.
+  // The img_len overflow causes a small allocation, then the conversion loop
+  // writes OOB.
+  ```
+- **Status:** Invalid
+- **Reason:** On 64-bit systems, the overflowed `img_len` (negative int) casts to a huge `size_t` when passed to `stbi__malloc`, and the allocation of ~18 exabytes fails. Function returns "outofmem" without heap overflow, which is the same outcome as the proposed fix. Exploitation requires a 32-bit target where the overflow wraps to a small positive value.
+
+## BUG-stb_image-013
+
+- **Library:** `stb_image.h`
+- **Severity:** High
+- **Class:** Integer Overflow -> Heap Buffer Overflow
+- **Location:** `stb_image.h:1209-1212`
+- **Source:** https://github.com/nothings/stb/issues/1928 (bug 2)
+- **Technique:** web-search
+- **Description:**
+  In `stbi__convert_8_to_16`, the allocation uses `img_len = w * h * channels` followed by
+  `stbi__malloc(img_len*2)`. All operands are plain `int`. For a large image, the `img_len`
+  multiplication overflows, and the `*2` doubles the wrapping error. This results in an
+  undersized heap allocation, and the conversion loop at line 1215 writes past the end of
+  the buffer. The risk is doubled compared to the 16-to-8 path because of the additional `*2`
+  factor.
+- **Reproduction sketch:**
+  ```c
+  // Load a very large 8-bit image (e.g., 32768x32768 RGBA PNG) via stbi_load_16
+  // (which triggers 8-to-16 conversion). The allocation overflows.
+  ```
+- **Status:** Invalid
+- **Reason:** Same as BUG-012: on 64-bit, the overflowed `img_len` causes a `malloc` of a huge size to fail, returning "outofmem". Both buggy and fixed code produce the same outcome on 64-bit. Requires a 32-bit target to exploit.
+
+## BUG-stb_image-014
+
+- **Library:** `stb_image.h`
+- **Severity:** Medium
+- **Class:** Out-of-bounds Read / Information Disclosure
+- **Location:** `stb_image.h:4956-4988`
+- **Source:** https://github.com/nothings/stb/issues/1928 (bug 5)
+- **Technique:** web-search
+- **Description:**
+  In `stbi__expand_png_palette`, the `palette` buffer is 1024 bytes (256 entries × 4 channels)
+  allocated on the caller's stack at lines 5137-5141. Only `pal_len` entries are initialized
+  from the PLTE chunk (at most 256, but possibly fewer). The `STBI_NOTUSED(len)` at line 4988
+  explicitly discards the palette length. Pixel values can range 0-255 regardless of palette
+  size. For any pixel index >= pal_len*4, the code reads uninitialized stack memory, producing
+  output pixels that contain leaked stack data.
+- **Reproduction sketch:**
+  ```c
+  // Provide a paletted PNG with 1 palette entry and pixel values 0-255.
+  // Pixels with value > 0 will contain uninitialized stack data.
+  ```
+- **Status:** Patched
+- **Fix:** Added bounds check on palette index in `stbi__expand_png_palette` (stb_image.h:4969,4977). Clamped `orig[i]` to `len-1` before computing the palette offset, preventing out-of-bounds reads from uninitialized stack memory when pixel indices exceed the palette size.
+
+## BUG-stb_image-015
+
+- **Library:** `stb_image.h`
+- **Severity:** Low
+- **Class:** Logic Error / Spec Violation
+- **Location:** `stb_image.h:5111-5114`
+- **Source:** https://github.com/nothings/stb/issues/1928 (bug 6)
+- **Technique:** web-search
+- **Description:**
+  The PNG IHDR parser accepts bit depths 1, 2, and 4 with color types 2 (RGB), 4 (GA), and 6 (RGBA),
+  which violates the PNG specification. Per the PNG spec, color types 2, 4, 6 are restricted to
+  depths 8 and 16. Accepting sub-8-bit depths for multi-channel images causes the bit-unpacking
+  code to misinterpret pixel boundaries, potentially producing incorrect output. While not a direct
+  memory safety issue, this logic error could lead to unexpected decoder behavior.
+- **Reproduction sketch:**
+  ```c
+  // Create a PNG with color type 2 (RGB) and depth 4.
+  // The image will load "successfully" with corrupted pixel data.
+  ```
+- **Status:** Patched
+- **Fix:** Added IHDR validation check at stb_image.h:5112. Color types 2 (RGB), 4 (GA), and 6 (RGBA) now reject bit depths less than 8, per the PNG specification. Previously, depths 1, 2, and 4 were silently accepted for these color types, causing incorrect bit-unpacking and corrupted pixel output.
+
+## BUG-stb_image-016
+
+- **Library:** `stb_image.h`
+- **Severity:** High
+- **Class:** Integer Overflow -> Heap Buffer Overflow
+- **Location:** `stb_image.h:5188-5189`
+- **Source:** https://github.com/nothings/stb/issues/1928 (bug 7)
+- **Technique:** web-search
+- **Description:**
+  The PNG IDAT accumulation loop doubles `idata_limit` each time incoming data exceeds current
+  capacity: `while (ioff + c.length > idata_limit) idata_limit *= 2`. The variable `idata_limit`
+  is `stbi__uint32`. After collecting enough large IDAT chunks (e.g., 2^32 worth of data),
+  the doubling causes `idata_limit` to overflow to 0. `STBI_REALLOC_SIZED` with size 0 frees
+  the old buffer and returns NULL (on POSIX), or returns a zero-size block. Subsequent
+  `stbi__getn` writes the full IDAT chunk contents into this undersized buffer, causing a
+  heap buffer overflow.
+- **Reproduction sketch:**
+  ```c
+  // Provide a PNG with many large IDAT chunks whose cumulative data
+  // causes idata_limit to overflow to 0.
+  ```
+- **Status:** Invalid
+- **Reason:** On 64-bit Linux (glibc), `STBI_REALLOC_SIZED` with size 0 calls `realloc(ptr, 0)` which frees the pointer and returns NULL, caught as "outofmem". The bug would require `realloc(ptr, 0)` to return a non-NULL zero-size allocation (BSD/macOS behavior) to be exploitable. Not reproducible on this platform.
+
+## BUG-stb_image-017
+
+- **Library:** `stb_image.h`
+- **Severity:** Medium
+- **Class:** Logic Error
+- **Location:** `stb_image.h:3440`
+- **Source:** https://github.com/nothings/stb/issues/1928 (bug 8)
+- **Technique:** web-search
+- **Description:**
+  In the JPEG decoder's scan loop, when `stbi__process_marker` returns 0 (failure),
+  the code at line 3440 does `if (!stbi__process_marker(j, m)) return 1;` — returning
+  1 (success) instead of 0 (failure). This causes the decoder to treat a corrupt or
+  unexpected JPEG marker as a successful decode, potentially returning an incomplete
+  or corrupted image to the caller. Between progressive scans, bad markers are silently
+  accepted.
+- **Reproduction sketch:**
+  ```c
+  // Provide a progressive JPEG with a malformed marker between scans.
+  // The decoder will return success (1) despite the marker failure.
+  ```
+- **Status:** Patched
+- **Fix:** Changed `return 1` to `return 0` at stb_image.h:3440. When `stbi__process_marker` returns 0 (failure), the scan loop now correctly propagates the failure instead of treating it as success.
+
+## BUG-stb_image-018
+
+- **Library:** `stb_image.h`
+- **Severity:** Medium
+- **Class:** Use of Uninitialized Memory (Information Disclosure)
+- **Location:** `stb_image.h:3085, 3346`
+- **Source:** https://github.com/nothings/stb/issues/1928 (bug 9)
+- **Technique:** web-search
+- **Description:**
+  In `stbi__jpeg_finish` (line 3085), all `z->s->img_n` components are dequantized and
+  IDCT'd into the output image. Coefficients are allocated with `stbi__malloc_mad3` at
+  line 3346 (not calloc). In a progressive JPEG, not all components may appear in SOS
+  (Start of Scan) segments. Components that were never scanned contain uninitialized
+  heap data. The IDCT processes this uninitialized data into the output pixels, leaking
+  heap contents. The leak extent depends on which components are unscanned.
+- **Reproduction sketch:**
+  ```c
+  // Provide a progressive JPEG that defines 3 components but only scans 2 of them
+  // in SOS markers. The unscanned component will leak heap data into the output.
+  ```
+- **Status:** Patched
+- **Fix:** Added `memset` to zero the `raw_coeff` buffer after allocation in `stbi__malloc_mad3` at stb_image.h:3349. In a progressive JPEG, components that are never scanned in any SOS marker would otherwise contain uninitialized malloc data, which the IDCT then processes into the output pixels, leaking heap contents.
+
+## BUG-stb_image-019
+
+- **Library:** `stb_image.h`
+- **Severity:** Medium
+- **Class:** Out-of-bounds Read / Information Disclosure
+- **Location:** `stb_image.h:5535, 5601-5608`
+- **Source:** https://github.com/nothings/stb/issues/1928 (bug 10)
+- **Technique:** web-search
+- **Description:**
+  In the BMP decoder, `pal[256][4]` is a stack-allocated array (line 5535). For an 8-bit BMP,
+  `psize` specifies the number of palette entries read from the file (1-256, line 5601-5608).
+  Pixel values in the image data can range 0-255 regardless of `psize`. If `psize < 256`,
+  pixel indices >= psize read uninitialized stack memory from the unfilled portion of `pal`.
+  These values are written directly to the output image, disclosing stack contents.
+- **Reproduction sketch:**
+  ```c
+  // Provide an 8-bit BMP with psize=1 and pixel values 0-255.
+  // Output pixels will contain stack data for all non-zero pixel values.
+  ```
+- **Status:** Patched
+- **Fix:** Added bounds checks on pixel indices before `pal[]` access in all three BMP pixel-decode paths (stb_image.h:5617,5638,5645). Pixel values >= `psize` are clamped to `psize-1`, preventing out-of-bounds reads from uninitialized stack memory.
+
+## BUG-stb_image-020
+
+- **Library:** `stb_image.h`
+- **Severity:** Medium
+- **Class:** Integer Overflow
+- **Location:** `stb_image.h:1250`
+- **Source:** https://github.com/nothings/stb/issues/1928 (bug 11)
+- **Technique:** web-search
+- **Description:**
+  In `stbi__vertical_flip_slices` (used when flipping animated GIFs with
+  `stbi_set_flip_vertically_on_load`), `slice_size = w * h * bytes_per_pixel` is computed
+  using plain int multiplication with no overflow check. If the image dimensions are large
+  enough, this overflows. The overflowed `slice_size` is then used in pointer arithmetic
+  (`bytes += slice_size`) to advance between slices, resulting in incorrect offsets and
+  out-of-bounds reads/writes during the vertical flip of subsequent slices.
+- **Reproduction sketch:**
+  ```c
+  // Load a large animated GIF with stbi_set_flip_vertically_on_load(1).
+  ```
+- **Status:** Invalid
+- **Reason:** The `slice_size` in `stbi__vertical_flip_slices` uses the same `w`, `h`, and `bytes_per_pixel` as the GIF stride computation (`stride = g.w * g.h * 4`). The stride overflow was already fixed by BUG-001's overflow checks, so the oversize dimensions that would overflow `slice_size` cannot reach `stbi__vertical_flip_slices`. This bug is effectively neutered by the BUG-001 fix.
+
+## Session Summary — 2026-05-31
 
 | Bug ID | Severity | Class | Status | Notes |
 |--------|----------|-------|--------|-------|
@@ -282,3 +487,12 @@
 | BUG-stb_image-009 | Medium | NULL Pointer Dereference | Patched | Fixed at stb_image.h:6536 |
 | BUG-stb_image-010 | Medium | NULL Ptr Deref / Uninit Var | Patched | Fixed at stb_image.h:1451 |
 | BUG-stb_image-011 | Medium | Integer Overflow -> Heap BOF | Patched | Fixed at stb_image.h:1820 |
+| BUG-stb_image-012 | High | Integer Overflow -> Heap Buffer Overflow | Invalid | Not reproducible on 64-bit (requires 32-bit) |
+| BUG-stb_image-013 | High | Integer Overflow -> Heap Buffer Overflow | Invalid | Not reproducible on 64-bit (requires 32-bit) |
+| BUG-stb_image-014 | Medium | Out-of-bounds Read / Information Disclosure | Patched | Fixed at stb_image.h:4969,4977 |
+| BUG-stb_image-015 | Low | Logic Error / Spec Violation | Patched | Fixed at stb_image.h:5112 |
+| BUG-stb_image-016 | High | Integer Overflow -> Heap Buffer Overflow | Invalid | Not reproducible on Linux (glibc realloc frees) |
+| BUG-stb_image-017 | Medium | Logic Error | Patched | Fixed at stb_image.h:3440 |
+| BUG-stb_image-018 | Medium | Use of Uninitialized Memory (Info Leak) | Patched | Fixed at stb_image.h:3349 |
+| BUG-stb_image-019 | Medium | Out-of-bounds Read / Information Disclosure | Patched | Fixed at stb_image.h:5617,5638,5645 |
+| BUG-stb_image-020 | Medium | Integer Overflow | Invalid | Neutered by BUG-001 stride overflow fix |

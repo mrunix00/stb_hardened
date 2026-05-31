@@ -3343,10 +3343,11 @@ static int stbi__process_frame_header(stbi__jpeg *z, int scan)
          // w2, h2 are multiples of 8 (see above)
          z->img_comp[i].coeff_w = z->img_comp[i].w2 / 8;
          z->img_comp[i].coeff_h = z->img_comp[i].h2 / 8;
-         z->img_comp[i].raw_coeff = stbi__malloc_mad3(z->img_comp[i].w2, z->img_comp[i].h2, sizeof(short), 15);
-         if (z->img_comp[i].raw_coeff == NULL)
-            return stbi__free_jpeg_components(z, i+1, stbi__err("outofmem", "Out of memory"));
-         z->img_comp[i].coeff = (short*) (((size_t) z->img_comp[i].raw_coeff + 15) & ~15);
+          z->img_comp[i].raw_coeff = stbi__malloc_mad3(z->img_comp[i].w2, z->img_comp[i].h2, sizeof(short), 15);
+          if (z->img_comp[i].raw_coeff == NULL)
+             return stbi__free_jpeg_components(z, i+1, stbi__err("outofmem", "Out of memory"));
+          memset(z->img_comp[i].raw_coeff, 0, (size_t)z->img_comp[i].w2 * z->img_comp[i].h2 * sizeof(short) + 15);
+          z->img_comp[i].coeff = (short*) (((size_t) z->img_comp[i].raw_coeff + 15) & ~15);
       }
    }
 
@@ -3437,7 +3438,7 @@ static int stbi__decode_jpeg_image(stbi__jpeg *j)
          if (NL != j->s->img_y) return stbi__err("bad DNL height", "Corrupt JPEG");
          m = stbi__get_marker(j);
       } else {
-         if (!stbi__process_marker(j, m)) return 1;
+          if (!stbi__process_marker(j, m)) return 0;
          m = stbi__get_marker(j);
       }
    }
@@ -4966,7 +4967,7 @@ static int stbi__expand_png_palette(stbi__png *a, stbi_uc *palette, int len, int
 
    if (pal_img_n == 3) {
       for (i=0; i < pixel_count; ++i) {
-         int n = orig[i]*4;
+         int n = (orig[i] < len ? orig[i] : len-1) * 4;
          p[0] = palette[n  ];
          p[1] = palette[n+1];
          p[2] = palette[n+2];
@@ -4974,7 +4975,7 @@ static int stbi__expand_png_palette(stbi__png *a, stbi_uc *palette, int len, int
       }
    } else {
       for (i=0; i < pixel_count; ++i) {
-         int n = orig[i]*4;
+         int n = (orig[i] < len ? orig[i] : len-1) * 4;
          p[0] = palette[n  ];
          p[1] = palette[n+1];
          p[2] = palette[n+2];
@@ -4984,8 +4985,6 @@ static int stbi__expand_png_palette(stbi__png *a, stbi_uc *palette, int len, int
    }
    STBI_FREE(a->out);
    a->out = temp_out;
-
-   STBI_NOTUSED(len);
 
    return 1;
 }
@@ -5111,6 +5110,7 @@ static int stbi__parse_png_file(stbi__png *z, int scan, int req_comp)
             z->depth = stbi__get8(s);  if (z->depth != 1 && z->depth != 2 && z->depth != 4 && z->depth != 8 && z->depth != 16)  return stbi__err("1/2/4/8/16-bit only","PNG not supported: 1/2/4/8/16-bit only");
             color = stbi__get8(s);  if (color > 6)         return stbi__err("bad ctype","Corrupt PNG");
             if (color == 3 && z->depth == 16)                  return stbi__err("bad ctype","Corrupt PNG");
+            if (color != 0 && color != 3 && z->depth < 8)     return stbi__err("bad ctype","Corrupt PNG");
             if (color == 3) pal_img_n = 3; else if (color & 1) return stbi__err("bad ctype","Corrupt PNG");
             comp  = stbi__get8(s);  if (comp) return stbi__err("bad comp method","Corrupt PNG");
             filter= stbi__get8(s);  if (filter) return stbi__err("bad filter method","Corrupt PNG");
@@ -5616,8 +5616,8 @@ static void *stbi__bmp_load(stbi__context *s, int *x, int *y, int *comp, int req
          for (j=0; j < (int) s->img_y; ++j) {
             int bit_offset = 7, v = stbi__get8(s);
             for (i=0; i < (int) s->img_x; ++i) {
-               int color = (v>>bit_offset)&0x1;
-               out[z++] = pal[color][0];
+                int color = (v>>bit_offset)&0x1; if (color >= psize) color = psize-1;
+                out[z++] = pal[color][0];
                out[z++] = pal[color][1];
                out[z++] = pal[color][2];
                if (target == 4) out[z++] = 255;
@@ -5637,13 +5637,15 @@ static void *stbi__bmp_load(stbi__context *s, int *x, int *y, int *comp, int req
                   v2 = v & 15;
                   v >>= 4;
                }
-               out[z++] = pal[v][0];
-               out[z++] = pal[v][1];
-               out[z++] = pal[v][2];
-               if (target == 4) out[z++] = 255;
-               if (i+1 == (int) s->img_x) break;
-               v = (info.bpp == 8) ? stbi__get8(s) : v2;
-               out[z++] = pal[v][0];
+                if (v >= psize) v = psize-1;
+                out[z++] = pal[v][0];
+                out[z++] = pal[v][1];
+                out[z++] = pal[v][2];
+                if (target == 4) out[z++] = 255;
+                if (i+1 == (int) s->img_x) break;
+                v = (info.bpp == 8) ? stbi__get8(s) : v2;
+                if (v >= psize) v = psize-1;
+                out[z++] = pal[v][0];
                out[z++] = pal[v][1];
                out[z++] = pal[v][2];
                if (target == 4) out[z++] = 255;
