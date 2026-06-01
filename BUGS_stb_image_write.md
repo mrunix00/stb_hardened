@@ -80,6 +80,31 @@
 - **Status:** Patched
 - **Fix:** Added `|| width < 0 || height < 0` to the input validation check at `stb_image_write.h:1474` to reject negative dimensions in the JPEG writer, consistent with `stbiw__outfile`.
 
+## BUG-stb_image_write-005
+
+- **Library:** `stb_image_write.h`
+- **Severity:** Medium
+- **Class:** Undefined Behavior (Float-to-Integer Conversion of NaN/Infinity)
+- **Location:** `stb_image_write.h:639-654`
+- **Source:** Fuzzer crash (UBSan: `runtime error: -nan is outside the range of representable values of type 'unsigned char'`)
+- **Technique:** fuzzing
+- **Description:**
+  `stbiw__linear_to_rgbe()` does not guard against NaN or infinity pixel values. When all three RGB components are NaN (or any component is +infinity), the internal `stbiw__max` macro computes `maxcomp` as NaN or infinity. The comparison `maxcomp < 1e-32f` evaluates to false (NaN comparisons always return false; infinity > 1e-32), so the function proceeds to the else branch and computes `normalize = frexp(maxcomp, &exponent) * 256.0f / maxcomp`. When `maxcomp` is NaN, `normalize` becomes NaN because `frexp(NaN)` returns NaN and `256/NaN` = NaN. When `maxcomp` is infinity, `frexp(inf)` returns inf and `256/inf` = 0, but `inf * 0` = NaN per IEEE 754. Multiplying NaN by any linear component yields NaN, and converting NaN to `unsigned char` is undefined behavior in C. On UBSan-instrumented builds this immediately aborts; on release builds the behavior is implementation-defined. An attacker who can supply arbitrary float values to `stbi_write_hdr()` or `stbi_write_hdr_to_func()` can trigger undefined behavior in the library.
+- **Reproduction sketch:**
+  ```c
+  #define STB_IMAGE_WRITE_IMPLEMENTATION
+  #include "stb_image_write.h"
+  #include <math.h>
+  int main() {
+      float buf[4] = { INFINITY, 0.0f, 0.0f, 1.0f };
+      stbi_write_hdr_to_func(my_write_func, NULL, 1, 1, 3, buf);
+      return 0;
+  }
+  ```
+  With UBSan `-fsanitize=undefined`, this triggers "outside the range of representable values" at lines 649-651. On release builds, the NaN-to-unsigned char conversion produces an unspecified result.
+- **Status:** Patched
+- **Fix:** Changed the NaN/Infinity guard in `stbiw__linear_to_rgbe` (line 644) from `if (maxcomp < 1e-32f)` to `if (!(maxcomp >= 1e-32f) || maxcomp * 2 == maxcomp)`. The `!(maxcomp >= 1e-32f)` form catches NaN (NaN comparisons always return false) and negative/zero values. The `maxcomp * 2 == maxcomp` check catches infinity (the only positive value for which `x*2 == x` is true). Non-finite inputs are now safely treated as black (all-zero RGBE).
+
 ## Session Summary — 2026-05-30
 
 | Bug ID | Severity | Class | Status | Notes |
@@ -88,4 +113,5 @@
 | BUG-stb_image_write-002 | High | Integer Overflow | Invalid | Could not reproduce; requires >2GB allocation |
 | BUG-stb_image_write-003 | Medium | Integer Overflow | Invalid | Could not reproduce; requires >2GB allocation |
 | BUG-stb_image_write-004 | Medium | Missing Input Validation | Patched | Fixed at stb_image_write.h:1474 — added negative dimension check |
+| BUG-stb_image_write-005 | Medium | Undefined Behavior | Patched | Fixed at stb_image_write.h:644 — NaN/Inf guard in stbiw__linear_to_rgbe |
 
