@@ -305,7 +305,7 @@ static int stb__clex_token(stb_lexer *lexer, int token, char *start, char *end)
    lexer->token = token;
    lexer->where_firstchar = start;
    lexer->where_lastchar = end;
-   lexer->parse_point = end+1;
+   lexer->parse_point = (end == lexer->eof) ? end : end+1;
    return 1;
 }
 
@@ -676,7 +676,7 @@ int stb_c_lexer_get_token(stb_lexer *lexer)
                return stb__clex_token(lexer, CLEX_parse_error, start,start);
             if (p == lexer->eof || *p != '\'')
                return stb__clex_token(lexer, CLEX_parse_error, start,p);
-            return stb__clex_token(lexer, CLEX_charlit, start, p+1);
+            return stb__clex_token(lexer, CLEX_charlit, start, p);
          })
          goto single_char;
 
