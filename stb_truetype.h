@@ -1196,7 +1196,7 @@ static stbtt__buf stbtt__cff_get_index(stbtt__buf *b)
    count = stbtt__buf_get16(b);
    if (count) {
       offsize = stbtt__buf_get8(b);
-      STBTT_assert(offsize >= 1 && offsize <= 4);
+      if (offsize < 1 || offsize > 4) return stbtt__new_buf(NULL, 0);
       stbtt__buf_skip(b, offsize * count);
       stbtt__buf_skip(b, stbtt__buf_get(b, offsize) - 1);
    }
@@ -1264,12 +1264,11 @@ static stbtt__buf stbtt__cff_index_get(stbtt__buf b, int i)
    stbtt__buf_seek(&b, 0);
    count = stbtt__buf_get16(&b);
    offsize = stbtt__buf_get8(&b);
-   STBTT_assert(i >= 0 && i < count);
-   STBTT_assert(offsize >= 1 && offsize <= 4);
+   if (i < 0 || i >= count) return stbtt__new_buf(NULL, 0);
+   if (offsize < 1 || offsize > 4) return stbtt__new_buf(NULL, 0);
    stbtt__buf_skip(&b, i*offsize);
    start = stbtt__buf_get(&b, offsize);
    end = stbtt__buf_get(&b, offsize);
-   return stbtt__buf_range(&b, 2+(count+1)*offsize+start, end - start);
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -1286,8 +1285,8 @@ static stbtt__buf stbtt__cff_index_get(stbtt__buf b, int i)
 
 static stbtt_uint16 ttUSHORT(stbtt_uint8 *p) { return p[0]*256 + p[1]; }
 static stbtt_int16 ttSHORT(stbtt_uint8 *p)   { return p[0]*256 + p[1]; }
-static stbtt_uint32 ttULONG(stbtt_uint8 *p)  { return (p[0]<<24) + (p[1]<<16) + (p[2]<<8) + p[3]; }
-static stbtt_int32 ttLONG(stbtt_uint8 *p)    { return (p[0]<<24) + (p[1]<<16) + (p[2]<<8) + p[3]; }
+static stbtt_uint32 ttULONG(stbtt_uint8 *p)  { return ((stbtt_uint32)p[0]<<24) + ((stbtt_uint32)p[1]<<16) + ((stbtt_uint32)p[2]<<8) + (stbtt_uint32)p[3]; }
+static stbtt_int32 ttLONG(stbtt_uint8 *p)    { return ((stbtt_uint32)p[0]<<24) + ((stbtt_uint32)p[1]<<16) + ((stbtt_uint32)p[2]<<8) + (stbtt_uint32)p[3]; }
 
 #define stbtt_tag4(p,c0,c1,c2,c3) ((p)[0] == (c0) && (p)[1] == (c1) && (p)[2] == (c2) && (p)[3] == (c3))
 #define stbtt_tag(p,str)           stbtt_tag4(p,str[0],str[1],str[2],str[3])
@@ -1324,8 +1323,14 @@ static stbtt_uint32 stbtt__find_table(stbtt_uint8 *data, stbtt_uint32 fontstart,
    }
    for (i=0; i < num_tables; ++i) {
       stbtt_uint32 loc = tabledir + 16*i;
-      if (stbtt_tag(data+loc+0, tag))
-         return ttULONG(data+loc+8);
+      stbtt_uint32 offset;
+      if (!stbtt_tag(data+loc+0, tag)) continue;
+      offset = ttULONG(data+loc+8);
+      // When data_len is known, reject directory entries that point past
+      // the buffer. Otherwise the caller dereferences the offset with no
+      // way to recover and the very first ttUSHORT/ttULONG read OOBs.
+      if (data_len > 0 && offset >= (stbtt_uint32)data_len) return 0;
+      return offset;
    }
    return 0;
 }
@@ -1540,6 +1545,11 @@ static int stbtt_InitFont_internal(stbtt_fontinfo *info, unsigned char *data, in
             break;
       }
    }
+   // Reject encoding subtable offsets that fall past the buffer; the
+   // first ttUSHORT in stbtt_FindGlyphIndex (Format 0/2/4/6/12/13)
+   // would otherwise read OOB.
+   if (info->index_map != 0 && info->data_len > 0 && info->index_map + 2 > (stbtt_uint32)info->data_len)
+      info->index_map = 0;
    if (info->index_map == 0)
       return 0;
 
@@ -1680,6 +1690,15 @@ static int stbtt__GetGlyfOffset(const stbtt_fontinfo *info, int glyph_index)
    } else {
       g1 = info->glyf + ttULONG (info->data + info->loca + glyph_index * 4);
       g2 = info->glyf + ttULONG (info->data + info->loca + glyph_index * 4 + 4);
+   }
+
+   // When data_len is known, reject glyph offsets that fall past the
+   // end of the buffer. Callers (e.g. stbtt_GetGlyphBox:1707) read at
+   // least 10 bytes starting at the returned offset, so require 10
+   // bytes of headroom.
+   if (info->data_len > 0) {
+      if (g1 < 0 || g1 + 10 > info->data_len) return -1;
+      if (g2 < 0 || g2     > info->data_len) return -1;
    }
 
    return g1==g2 ? -1 : g1; // if length is 0, return -1
@@ -2758,6 +2777,7 @@ STBTT_DEF void stbtt_GetFontBoundingBox(const stbtt_fontinfo *info, int *x0, int
 STBTT_DEF float stbtt_ScaleForPixelHeight(const stbtt_fontinfo *info, float height)
 {
    int fheight = ttSHORT(info->data + info->hhea + 4) - ttSHORT(info->data + info->hhea + 6);
+   if (fheight == 0) fheight = 1; // font-supplied ascender==descender would otherwise divide by zero
    return (float) height / fheight;
 }
 
@@ -3840,14 +3860,20 @@ STBTT_DEF unsigned char *stbtt_GetGlyphBitmapSubpixel(const stbtt_fontinfo *info
    if (xoff  ) *xoff   = ix0;
    if (yoff  ) *yoff   = iy0;
 
-   if (gbm.w && gbm.h) {
-      gbm.pixels = (unsigned char *) STBTT_malloc(gbm.w * gbm.h, info->userdata);
-      if (gbm.pixels) {
-         gbm.stride = gbm.w;
+    if (gbm.w && gbm.h) {
+       // Cap individual dimensions so the product fits in size_t
+       // without overflow and stays in a sensible range.
+       if (gbm.w > 0xffff || gbm.h > 0xffff) {
+          STBTT_free(vertices, info->userdata);
+          return NULL;
+       }
+       gbm.pixels = (unsigned char *) STBTT_malloc((size_t)gbm.w * (size_t)gbm.h, info->userdata);
+       if (gbm.pixels) {
+          gbm.stride = gbm.w;
 
-         stbtt_Rasterize(&gbm, 0.35f, vertices, num_verts, scale_x, scale_y, shift_x, shift_y, ix0, iy0, 1, info->userdata);
-      }
-   }
+          stbtt_Rasterize(&gbm, 0.35f, vertices, num_verts, scale_x, scale_y, shift_x, shift_y, ix0, iy0, 1, info->userdata);
+       }
+    }
    STBTT_free(vertices, info->userdata);
    return gbm.pixels;
 }
@@ -4717,8 +4743,9 @@ STBTT_DEF unsigned char * stbtt_GetGlyphSDF(const stbtt_fontinfo *info, float sc
       float *precompute;
       stbtt_vertex *verts;
       int num_verts = stbtt_GetGlyphShape(info, glyph, &verts);
-      data = (unsigned char *) STBTT_malloc(w * h, info->userdata);
-      precompute = (float *) STBTT_malloc(num_verts * sizeof(float), info->userdata);
+      if (w > 0xffff || h > 0xffff) return NULL;
+      data = (unsigned char *) STBTT_malloc((size_t)w * (size_t)h, info->userdata);
+      precompute = (float *) STBTT_malloc((size_t)num_verts * sizeof(float), info->userdata);
 
       for (i=0,j=num_verts-1; i < num_verts; j=i++) {
          if (verts[i].type == STBTT_vline) {
@@ -4938,6 +4965,19 @@ STBTT_DEF const char *stbtt_GetFontNameString(const stbtt_fontinfo *font, int *l
 
    count = ttUSHORT(fc+nm+2);
    stringOffset = nm + ttUSHORT(fc+nm+4);
+   // bounds check: each name record is 12 bytes and the header is 6 bytes,
+   // so the loop must not exceed the number of records that fit in the
+   // name table's declared length, and when data_len is known we must
+   // also not exceed the actual buffer extent.
+   {
+      stbtt_uint32 name_size = stbtt__get_table_size(fc, offset, "name", font->data_len);
+      stbtt_uint32 max_records = name_size > 6 ? (name_size - 6) / 12 : 0;
+      if (font->data_len > 0 && (stbtt_uint32)font->data_len > nm) {
+         stbtt_uint32 buf_max = ((stbtt_uint32)font->data_len - nm - 6) / 12;
+         if (buf_max < max_records) max_records = buf_max;
+      }
+      if ((stbtt_uint32)count > max_records) count = (stbtt_int32)max_records;
+   }
    for (i=0; i < count; ++i) {
       stbtt_uint32 loc = nm + 6 + 12 * i;
       if (platformID == ttUSHORT(fc+loc+0) && encodingID == ttUSHORT(fc+loc+2)
@@ -4949,11 +4989,12 @@ STBTT_DEF const char *stbtt_GetFontNameString(const stbtt_fontinfo *font, int *l
    return NULL;
 }
 
-static int stbtt__matchpair(stbtt_uint8 *fc, stbtt_uint32 nm, stbtt_uint8 *name, stbtt_int32 nlen, stbtt_int32 target_id, stbtt_int32 next_id)
+static int stbtt__matchpair(stbtt_uint8 *fc, stbtt_uint32 nm, stbtt_uint8 *name, stbtt_int32 nlen, stbtt_int32 target_id, stbtt_int32 next_id, stbtt_uint32 max_count)
 {
    stbtt_int32 i;
    stbtt_int32 count = ttUSHORT(fc+nm+2);
    stbtt_int32 stringOffset = nm + ttUSHORT(fc+nm+4);
+   if ((stbtt_uint32)count > max_count) count = (stbtt_int32)max_count;
 
    for (i=0; i < count; ++i) {
       stbtt_uint32 loc = nm + 6 + 12 * i;
@@ -4996,10 +5037,11 @@ static int stbtt__matchpair(stbtt_uint8 *fc, stbtt_uint32 nm, stbtt_uint8 *name,
    return 0;
 }
 
-static int stbtt__matches(stbtt_uint8 *fc, stbtt_uint32 offset, stbtt_uint8 *name, stbtt_int32 flags)
+static int stbtt__matches(stbtt_uint8 *fc, stbtt_uint32 offset, stbtt_uint8 *name, stbtt_int32 flags, int data_len)
 {
    stbtt_int32 nlen = (stbtt_int32) STBTT_strlen((char *) name);
    stbtt_uint32 nm,hd;
+   stbtt_uint32 name_size, max_records;
    if (!stbtt__isfont(fc+offset)) return 0;
 
    // check italics/bold/underline flags in macStyle...
@@ -5008,18 +5050,28 @@ static int stbtt__matches(stbtt_uint8 *fc, stbtt_uint32 offset, stbtt_uint8 *nam
       if ((ttUSHORT(fc+hd+44) & 7) != (flags & 7)) return 0;
    }
 
-   nm = stbtt__find_table(fc, offset, "name", 0);
+   nm = stbtt__find_table(fc, offset, "name", data_len);
    if (!nm) return 0;
+
+   // bound the name-record count by the table's declared size so an
+   // attacker-controlled count cannot walk past the buffer. when
+   // data_len is known we also cap by the actual buffer extent.
+   name_size = stbtt__get_table_size(fc, offset, "name", data_len);
+   max_records = name_size > 6 ? (name_size - 6) / 12 : 0;
+   if (data_len > 0 && (stbtt_uint32)data_len > nm) {
+      stbtt_uint32 buf_max = ((stbtt_uint32)data_len - nm - 6) / 12;
+      if (buf_max < max_records) max_records = buf_max;
+   }
 
    if (flags) {
       // if we checked the macStyle flags, then just check the family and ignore the subfamily
-      if (stbtt__matchpair(fc, nm, name, nlen, 16, -1))  return 1;
-      if (stbtt__matchpair(fc, nm, name, nlen,  1, -1))  return 1;
-      if (stbtt__matchpair(fc, nm, name, nlen,  3, -1))  return 1;
+      if (stbtt__matchpair(fc, nm, name, nlen, 16, -1, max_records))  return 1;
+      if (stbtt__matchpair(fc, nm, name, nlen,  1, -1, max_records))  return 1;
+      if (stbtt__matchpair(fc, nm, name, nlen,  3, -1, max_records))  return 1;
    } else {
-      if (stbtt__matchpair(fc, nm, name, nlen, 16, 17))  return 1;
-      if (stbtt__matchpair(fc, nm, name, nlen,  1,  2))  return 1;
-      if (stbtt__matchpair(fc, nm, name, nlen,  3, -1))  return 1;
+      if (stbtt__matchpair(fc, nm, name, nlen, 16, 17, max_records))  return 1;
+      if (stbtt__matchpair(fc, nm, name, nlen,  1,  2, max_records))  return 1;
+      if (stbtt__matchpair(fc, nm, name, nlen,  3, -1, max_records))  return 1;
    }
 
    return 0;
@@ -5031,7 +5083,7 @@ static int stbtt_FindMatchingFont_internal(unsigned char *font_collection, char 
    for (i=0;;++i) {
       stbtt_int32 off = stbtt_GetFontOffsetForIndex(font_collection, i);
       if (off < 0) return off;
-      if (stbtt__matches((stbtt_uint8 *) font_collection, off, (stbtt_uint8*) name_utf8, flags))
+      if (stbtt__matches((stbtt_uint8 *) font_collection, off, (stbtt_uint8*) name_utf8, flags, 0))
          return off;
    }
 }
@@ -5073,6 +5125,18 @@ STBTT_DEF int stbtt_InitFontEx(stbtt_fontinfo *info, const unsigned char *data, 
 STBTT_DEF int stbtt_FindMatchingFont(const unsigned char *fontdata, const char *name, int flags)
 {
    return stbtt_FindMatchingFont_internal((unsigned char *) fontdata, (char *) name, flags);
+}
+
+STBTT_DEF int stbtt_FindMatchingFontEx(const unsigned char *fontdata, int data_len, const char *name, int flags)
+{
+   stbtt_int32 i;
+   if (data_len < 0) return -1;
+   for (i=0;;++i) {
+      stbtt_int32 off = stbtt_GetFontOffsetForIndex((unsigned char *) fontdata, i);
+      if (off < 0) return off;
+      if (stbtt__matches((stbtt_uint8 *) fontdata, off, (stbtt_uint8*) name, flags, data_len))
+         return off;
+   }
 }
 
 STBTT_DEF int stbtt_CompareUTF8toUTF16_bigendian(const char *s1, int len1, const char *s2, int len2)

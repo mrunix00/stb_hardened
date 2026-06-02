@@ -51,6 +51,12 @@ $(BUILD_DIR)/image_fuzzer_standalone: $(TEST_DIR)/fuzz_main.c $(TEST_DIR)/stbi_r
 $(BUILD_DIR)/stbi_read_fuzzer: $(TEST_DIR)/stbi_read_fuzzer.c | $(BUILD_DIR)
 	$(CC) $(INCLUDES) $(FUZZ_CFLAGS) $< -lm $(FUZZ_LDFLAGS) -o $@
 
+$(BUILD_DIR)/stbtt_read_fuzzer: $(TEST_DIR)/stbtt_read_fuzzer.c | $(BUILD_DIR)
+	$(CC) $(INCLUDES) $(FUZZ_CFLAGS) $< -lm $(FUZZ_LDFLAGS) -o $@
+
+$(BUILD_DIR)/stbtt_fuzzer_standalone: $(TEST_DIR)/fuzz_main.c $(TEST_DIR)/stbtt_read_fuzzer.c | $(BUILD_DIR)
+	$(CC) $(INCLUDES) $(TEST_CFLAGS) $^ -lm $(TEST_LDFLAGS) -o $@
+
 $(BUILD_DIR)/bug_%: $(TEST_DIR)/bug_%.c | $(BUILD_DIR)
 	$(CC) $(INCLUDES) $(TEST_CFLAGS) $< -lm $(TEST_LDFLAGS) -o $@
 
@@ -64,10 +70,11 @@ bug-tests: $(BUG_TEST_BINS)
 		done; \
 	fi
 
-fuzzers: $(BUILD_DIR)/image_fuzzer_standalone $(BUILD_DIR)/stbi_read_fuzzer
+fuzzers: $(BUILD_DIR)/image_fuzzer_standalone $(BUILD_DIR)/stbi_read_fuzzer $(BUILD_DIR)/stbtt_read_fuzzer $(BUILD_DIR)/stbtt_fuzzer_standalone
 
 fuzz-smoke: fuzzers
 	$(FUZZ_RUN_ENV) $(BUILD_DIR)/stbi_read_fuzzer -runs=1 -artifact_prefix=$(BUILD_DIR)/ $(TEST_DIR)/pngsuite/primary_check
+	$(FUZZ_RUN_ENV) $(BUILD_DIR)/stbtt_read_fuzzer -runs=1 -artifact_prefix=$(BUILD_DIR)/
 
 clean:
 	rm -rf $(BUILD_DIR)
