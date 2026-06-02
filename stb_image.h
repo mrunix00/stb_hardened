@@ -5902,6 +5902,7 @@ static void *stbi__tga_load(stbi__context *s, int *x, int *y, int *comp, int req
 
    if (tga_height > STBI_MAX_DIMENSIONS) return stbi__errpuc("too large","Very large image (corrupt?)");
    if (tga_width > STBI_MAX_DIMENSIONS) return stbi__errpuc("too large","Very large image (corrupt?)");
+   if ((size_t)tga_width * (size_t)tga_height > STBI_MAX_DIMENSIONS) return stbi__errpuc("too large","Very large image (corrupt?)");  // BUG-024 fix
 
    //   do a tiny bit of precessing
    if ( tga_image_type >= 8 )
@@ -5981,6 +5982,7 @@ static void *stbi__tga_load(stbi__context *s, int *x, int *y, int *comp, int req
             {
                //   yep, get the next byte as a RLE command
                int RLE_cmd = stbi__get8(s);
+               if (RLE_cmd == 0 && stbi__at_eof(s)) break;  // BUG-021 fix
                RLE_count = 1 + (RLE_cmd & 127);
                RLE_repeating = RLE_cmd >> 7;
                read_next_pixel = 1;
@@ -6800,6 +6802,8 @@ static stbi_uc *stbi__gif_load_next(stbi__context *s, stbi__gif *g, int *comp, i
       if (!stbi__mad3sizes_valid(4, g->w, g->h, 0))
          return stbi__errpuc("too large", "GIF image is too large");
       pcount = g->w * g->h;
+      if (pcount > STBI_MAX_DIMENSIONS)  // BUG-022 fix
+         return stbi__errpuc("too large", "GIF image is too large");
       g->out = (stbi_uc *) stbi__malloc(4 * pcount);
       g->background = (stbi_uc *) stbi__malloc(4 * pcount);
       g->history = (stbi_uc *) stbi__malloc(pcount);

@@ -472,6 +472,138 @@
 - **Status:** Invalid
 - **Reason:** The `slice_size` in `stbi__vertical_flip_slices` uses the same `w`, `h`, and `bytes_per_pixel` as the GIF stride computation (`stride = g.w * g.h * 4`). The stride overflow was already fixed by BUG-001's overflow checks, so the oversize dimensions that would overflow `slice_size` cannot reach `stbi__vertical_flip_slices`. This bug is effectively neutered by the BUG-001 fix.
 
+## BUG-stb_image-021
+
+- **Library:** `stb_image.h`
+- **Severity:** Medium
+- **Class:** Denial of Service (Slow / Resource Consumption)
+- **Location:** `stb_image.h:5975-6030`
+- **Source:** libFuzzer timeout in `stbi__tga_load` (RLE loop)
+- **Technique:** fuzzing
+- **Description:**
+  In `stbi__tga_load`, the RLE-decoding loop `for (i=0; i < tga_width * tga_height; ++i)` is
+  bounded only by the declared image dimensions, not by the available source data. When
+  the input stream runs out of bytes early (e.g. a truncated TGA), `stbi__get8(s)` returns
+  zero on EOF, which produces an RLE command byte of 0x00 → RLE_count=1, RLE_repeating=0,
+  then the per-pixel reads also return zero. The loop then continues iterating over the
+  declared pixel count, doing useless work for every "pixel".
+
+  With ASan+libFuzzer, a 18-byte TGA declaring 32767×511 = ~16.7M pixels (within
+  `STBI_MAX_DIMENSIONS` for each axis individually) takes well over 10s to "decode"
+  producing an all-zero image. Without ASan the same input takes ~3s of CPU.
+  A larger declared area (e.g. 65535×4099) extends this further.
+
+  Net effect: a few dozen bytes of attacker-controlled input can pin a CPU core for
+  multiple seconds. No memory corruption, but a clear DoS.
+- **Reproduction sketch:**
+  ```c
+  // 18-byte TGA-like input; mode byte for fuzzer, then:
+  //   00 00 0b e4 04 01 01 01 00 00 00 ff 01 ff ff 01 0f
+  // (id=0, color_map=0, image_type=RLE-gray, width=65281, height=511, bpp=15)
+  // Call stbi_load_from_memory on this. Decoder fills tga_data with zeros
+  // via 16.7M RLE loop iterations while source is exhausted.
+  ```
+  Fuzzer artifact: `crashes-saved/timeout-9201690b6575950dbc645d895a64df0a72d5ff9f`
+- **Status:** Patched
+- **Fix:** Added an EOF check inside the TGA RLE loop in `stbi__tga_load` at
+  stb_image.h:5985. When `stbi__get8(s)` returns 0 (the value `stbi__get8`
+  returns on EOF) AND the source is at EOF, the RLE loop is broken out of
+  early. This stops the decoder from running useless iterations over a
+  declared image area when the source is already exhausted. The validation
+  test (`tests/bug_stb_image_021.c`) goes from 1.95s to 0.46s on this input.
+
+## BUG-stb_image-022
+
+- **Library:** `stb_image.h`
+- **Severity:** High
+- **Class:** Denial of Service (Excessive Memory Allocation)
+- **Location:** `stb_image.h:6803-6805`
+- **Source:** libFuzzer out-of-memory in `stbi__gif_load_next`
+- **Technique:** fuzzing
+- **Description:**
+  In `stbi__gif_load_next`, the first-frame buffers are allocated as:
+  ```c
+  g->out       = (stbi_uc *) stbi__malloc(4 * pcount);
+  g->background = (stbi_uc *) stbi__malloc(4 * pcount);
+  g->history   = (stbi_uc *) stbi__malloc(pcount);
+  ```
+  where `pcount = g->w * g->h`. The only pre-allocation check is
+  `stbi__mad3sizes_valid(4, g->w, g->h, 0)`, which guards against signed integer
+  overflow, not against the resulting allocation being unreasonably large.
+
+  `g->w` and `g->h` are validated against `STBI_MAX_DIMENSIONS` (1<<24) individually
+  by `stbi__gif_header`, so each can be up to 16,777,216. The *product* `g->w * g->h`
+  is unconstrained and may be 200M-700M, producing `4 * pcount` of 800MB-2.8GB.
+
+  A 44-byte GIF89a input with `width=0x4900` (18688) and `height=0x3846` (14406)
+  — bytes "IF89a" reused as the height value via the overlapping header layout —
+  causes three allocations totalling ~1.3GB. A 23-byte input with
+  `width=0x2d00, height=0x0c7e` (overlapping with "~~~") does similarly. LibFuzzer
+  with a 2GB RSS limit is OOM-killed; an unconstrained process can be pushed to
+  the system OOM killer.
+
+  No memory corruption, but the attack surface is a tiny input → GB-scale allocation.
+- **Reproduction sketch:**
+  ```c
+  // Mode byte 0x00 (8-bit load, req_comp=0) followed by a GIF89a with
+  // overlapping width/height bytes. Example 44-byte payload:
+  //   00 47 49 46 38 39 61 00 49 46 38 39 61 00 00 80
+  //   00 00 2c ff ff 00 00 00 2c 01 00 10 47 00 80 00
+  //   00 2c ff ff 00 00 00 2c 01 00 10 47
+  // Call stbi_load_from_memory on this — three allocations of ~270MB, ~1.07GB,
+  // and ~1.07GB are issued before the image is even decoded.
+  ```
+  Fuzzer artifacts: `crashes-saved/oom-{1d895df...,3f52956...,af640ded...,b448c35b...}`
+- **Status:** Patched
+- **Fix:** Added a total-pixel check `pcount > STBI_MAX_DIMENSIONS` in
+  `stbi__gif_load_next` at stb_image.h:6802. The previous
+  `stbi__mad3sizes_valid(4, g->w, g->h, 0)` only guarded against signed
+  integer overflow, not against excessive allocation. Now the loader
+  rejects images whose total pixel count exceeds `STBI_MAX_DIMENSIONS`
+  (1<<24) with "too large" before any of the three 1.3GB-scale buffers
+  are allocated. The validation test (`tests/bug_stb_image_022.c`) now
+  sees `"too large"` immediately on the same 44-byte GIF input.
+
+## BUG-stb_image-023
+
+- **Library:** `stb_image.h`
+- **Severity:** Low
+- **Class:** Undefined Behavior (UBSAN)
+- **Location:** `stb_image.h:1683`
+- **Source:** libFuzzer UBSAN report: `null pointer passed as argument 1, which is declared to never be null`
+- **Technique:** fuzzing
+- **Description:**
+  The `stbi__getn` function contains a fallback branch that, on a memory-backed
+  `stbi__context`, calls `memcpy(buffer, s->img_buffer, n)` even when `n` is zero,
+  and even when `s->img_buffer` may not have been advanced past zero. Glibc
+  declares `memcpy` with `__nonnull ((1, 2))`, so passing a zero-sized memcpy
+  with a pointer that UBSAN cannot prove is non-NULL triggers a runtime
+  diagnostic:
+
+  ```
+  tests/../stb_image.h:1683:14: runtime error: null pointer passed as argument 1,
+    which is declared to never be null
+  /usr/include/string.h:48:28: note: nonnull attribute specified here
+  ```
+
+  This is recoverable UBSAN (the fuzzer does not abort), and the code in
+  practice performs no actual memory access. However, it is a real,
+  reproducible UB violation triggered by legitimate input shapes (TGA with
+  small bpp, GIF with declared max-dim count * 0 cases, etc.). The fix is a
+  one-line guard `if (n)` to skip the call when the size is zero.
+- **Reproduction sketch:**
+  ```c
+  // Build with -fsanitize=address,undefined -fno-sanitize-recover=undefined
+  // and feed any input that causes stbi__getn to be called with n==0.
+  // In the present fuzzer this is reachable via the TGA path (see BUG-021)
+  // because stbi__tga_load → ... → stbi__getn is reachable when the
+  // non-RLE pixel loop runs after a 0-byte input.
+  ```
+- **Status:** Unvalidated
+- **Note:** Reported as UBSAN-only; the fuzzer does not abort on it because
+  the build does not pass `-fno-sanitize-recover=undefined`. A future
+  test will be written to demonstrate the UB deterministically.
+
 ## Session Summary — 2026-05-31
 
 | Bug ID | Severity | Class | Status | Notes |
@@ -496,3 +628,57 @@
 | BUG-stb_image-018 | Medium | Use of Uninitialized Memory (Info Leak) | Patched | Fixed at stb_image.h:3349 |
 | BUG-stb_image-019 | Medium | Out-of-bounds Read / Information Disclosure | Patched | Fixed at stb_image.h:5617,5638,5645 |
 | BUG-stb_image-020 | Medium | Integer Overflow | Invalid | Neutered by BUG-001 stride overflow fix |
+| BUG-stb_image-021 | Medium | DoS (Slow RLE Loop) | Patched | Fixed at stb_image.h:5985 — EOF break in TGA RLE loop |
+| BUG-stb_image-022 | High | DoS (Excessive Allocation) | Patched | Fixed at stb_image.h:6802 — total-pixel bound in GIF load_next |
+| BUG-stb_image-023 | Low | Undefined Behavior | Unvalidated | UBSAN: `stbi__getn` calls `memcpy` with n=0 / possibly-NULL |
+| BUG-stb_image-024 | High | DoS (Excessive Allocation + Slow Post-Process) | Patched | Fixed at stb_image.h:5904 — total-pixel bound in TGA loader |
+
+## BUG-stb_image-024
+
+- **Library:** `stb_image.h`
+- **Severity:** High
+- **Class:** DoS (Excessive Allocation + Slow Post-Processing)
+- **Location:** `stb_image.h:5903-5904`
+- **Source:** libFuzzer timeout on input `crashes-saved/timeout-f2632f1dcc954b8b1ab3168989cddd1478699b46` discovered after fixing BUG-021
+- **Technique:** fuzzing
+- **Description:**
+  After the BUG-021 fix made the TGA RLE loop bounded by the actual input
+  bytes, a smaller TGA input (33 bytes) was still able to cause a 10-second
+  timeout. Root cause: the TGA loader only checks each dimension individually
+  against `STBI_MAX_DIMENSIONS` (1<<24), so a TGA declaring `width=2863`,
+  `height=65508` (per-axis: 2863 < 1<<24 and 65508 < 1<<24) still passes
+  those checks. The loader then computes `tga_comp` (4 for 32-bpp) and
+  allocates `stbi__malloc_mad3(tga_width, tga_height, tga_comp, 0)` ≈
+  **~750 MB**. The RLE loop exits quickly (with the BUG-021 fix), but the
+  post-processing vertical-flip loop iterates O(pcount) ≈ O(187M) on a
+  multi-hundred-MB buffer, which is catastrophic under ASan (each iteration
+  has poisoned red-zones on both sides). Result: a 33-byte input causes the
+  process to run for many seconds, exhausting CPU and memory.
+
+  This is a duplicate-flavor of the BUG-022 GIF issue: the per-axis bound
+  is insufficient when a malicious image has *moderate* width and height
+  but their product is still enormous.
+- **Reproduction sketch:**
+  ```c
+  unsigned char tga[] = {
+      0x00, 0x00, 0x0b,                       /* ID, colormap, RLE gray */
+      0xe4, 0x04, 0x0c, 0x01, 0x00,           /* colormap spec */
+      0x00, 0x07, 0x01, 0x01,                 /* x_origin, y_origin */
+      0x2f, 0x0b, 0xe4, 0xff,                 /* width=2863, height=65508 */
+      0x20,                                   /* bits_per_pixel */
+      0x5a, 0x47, 0x7c, 0x00, 0x00, 0x01, 0x00, 0x00,
+      0x00, 0x01, 0x01, 0xff, 0xff, 0xff, 0x0b,
+  };
+  stbi_load_from_memory(tga, sizeof(tga), &x, &y, &c, 0);
+  // On unpatched: returns non-NULL after ~2-3 seconds (or timeout under ASan).
+  ```
+- **Status:** Patched
+- **Fix:** Added `(size_t)tga_width * (size_t)tga_height > STBI_MAX_DIMENSIONS`
+  check at stb_image.h:5904. The check is placed right after the existing
+  per-axis `STBI_MAX_DIMENSIONS` checks, matching the BUG-022 GIF fix
+  style. The total-pixel bound is in pixel units (not bytes), and is
+  conservative: a 24-bit image of `STBI_MAX_DIMENSIONS` pixels would still
+  require ~48MB, well within reasonable use. The validation test
+  (`tests/bug_stb_image_024.c`) now reports `reason="too large"` and
+  returns `NULL` immediately on the same 33-byte input.
+| BUG-stb_image-024 | High | DoS (Excessive Allocation + Slow Post-Process) | Patched | Fixed at stb_image.h:5904 — total-pixel bound in TGA loader |
