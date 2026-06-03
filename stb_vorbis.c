@@ -755,8 +755,8 @@ typedef struct
    uint16 coupling_steps;
    MappingChannel *chan;
    uint8  submaps;
-   uint8  submap_floor[15]; // varies
-   uint8  submap_residue[15]; // varies
+    uint8  submap_floor[16]; // varies
+    uint8  submap_residue[16]; // varies
 } Mapping;
 
 typedef struct
@@ -914,7 +914,7 @@ static int error(vorb *f, enum STBVorbisError e)
 {
    f->error = e;
    if (!f->eof && e != VORBIS_need_more_data) {
-      f->error=e; // breakpoint for debugging
+      f->error=e;
    }
    return 0;
 }
@@ -949,6 +949,7 @@ static void *make_block_array(void *mem, int count, int size)
 
 static void *setup_malloc(vorb *f, int sz)
 {
+   if (sz < 0 || sz > INT_MAX - 7) return NULL;
    sz = (sz+7) & ~7; // round up to nearest 8 for alignment of future allocs.
    f->setup_memory_required += sz;
    if (f->alloc.alloc_buffer) {
@@ -968,6 +969,7 @@ static void setup_free(vorb *f, void *p)
 
 static void *setup_temp_malloc(vorb *f, int sz)
 {
+   if (sz < 0 || sz > INT_MAX - 7) return NULL;
    sz = (sz+7) & ~7; // round up to nearest 8 for alignment of future allocs.
    if (f->alloc.alloc_buffer) {
       if (f->temp_offset - sz < f->setup_offset) return NULL;
@@ -1096,9 +1098,9 @@ static int compute_codewords(Codebook *c, uint8 *len, int n, uint32 *values)
    // add to the list
    add_entry(c, 0, k, m++, len[k], values);
    // add all available leaves
-   for (i=1; i <= len[k]; ++i)
-      available[i] = 1U << (32-i);
-   // note that the above code treats the first case specially,
+    for (i=1; i <= len[k]; ++i)
+       available[i] = 1U << (32-i);
+    // note that the above code treats the first case specially,
    // but it's really the same as the following code, so they
    // could probably be combined (except the initial code is 0,
    // and I use 0 in available[] to mean 'empty')
@@ -1114,7 +1116,7 @@ static int compute_codewords(Codebook *c, uint8 *len, int n, uint32 *values)
       // trivial to prove, but it seems true and the assert never
       // fires, so!
       while (z > 0 && !available[z]) --z;
-      if (z == 0) { return FALSE; }
+      if (z == 0) return FALSE;
       res = available[z];
       available[z] = 0;
       add_entry(c, bit_reverse(res), i, m++, len[i], values);
@@ -1241,10 +1243,16 @@ static int vorbis_validate(uint8 *data)
 static int lookup1_values(int entries, int dim)
 {
    int r = (int) floor(exp((float) log((float) entries) / dim));
-   if ((int) floor(pow((float) r+1, dim)) <= entries)   // (int) cast for MinGW warning;
-      ++r;                                              // floor() to avoid _ftol() when non-CRT
-   if (pow((float) r+1, dim) <= entries)
-      return -1;
+   {
+      float test = pow((float) r+1, dim);
+      if (isfinite(test)) {
+         if ((int) floor(test) <= entries)
+            ++r;
+         test = pow((float) r+1, dim);
+         if (isfinite(test) && test <= entries)
+            return -1;
+      }
+   }
    if ((int) floor(pow((float) r, dim)) > entries)
       return -1;
    return r;
@@ -1450,8 +1458,8 @@ static int start_page_no_capturepattern(vorb *f)
    // stream structure version
    if (0 != get8(f)) return error(f, VORBIS_invalid_stream_structure_version);
    // header flag
-   f->page_flag = get8(f);
-   // absolute granule position
+    f->page_flag = get8(f);
+    // absolute granule position
    loc0 = get32(f);
    loc1 = get32(f);
    // @TODO: validate loc0,loc1 as valid positions?
@@ -3100,7 +3108,7 @@ static int do_floor(vorb *f, Mapping *map, int i, int n, float *target, YTYPE *f
       if (lx < n2) {
          // optimization of: draw_line(target, lx,ly, n,ly, n2);
          for (j=lx; j < n2; ++j)
-            LINE_OP(target[j], inverse_db_table[ly]);
+             LINE_OP(target[j], inverse_db_table[ly & 255]);
          CHECK(f);
       }
    }
@@ -3649,24 +3657,35 @@ static int start_decoder(vorb *f)
    for (i=0; i < 6; ++i) header[i] = get8_packet(f);
    if (!vorbis_validate(header))                    return error(f, VORBIS_invalid_setup);
    //file vendor
-   len = get32_packet(f);
-   f->vendor = (char*)setup_malloc(f, sizeof(char) * (len+1));
-   if (f->vendor == NULL)                           return error(f, VORBIS_outofmem);
-   for(i=0; i < len; ++i) {
-      f->vendor[i] = get8_packet(f);
-   }
-   f->vendor[len] = (char)'\0';
+    len = get32_packet(f);
+    if (len < 0)                                        return error(f, VORBIS_invalid_setup);
+    f->vendor = (char*)setup_malloc(f, sizeof(char) * (len+1));
+    if (f->vendor == NULL)                           return error(f, VORBIS_outofmem);
+    for(i=0; i < len; ++i) {
+       f->vendor[i] = get8_packet(f);
+    }
+    f->vendor[len] = (char)'\0';
    //user comments
    f->comment_list_length = get32_packet(f);
    f->comment_list = NULL;
    if (f->comment_list_length > 0)
    {
-      f->comment_list = (char**) setup_malloc(f, sizeof(char*) * (f->comment_list_length));
-      if (f->comment_list == NULL)                  return error(f, VORBIS_outofmem);
-   }
+      size_t alloc_size = sizeof(char*) * (size_t) f->comment_list_length;
+      if (alloc_size / sizeof(char*) != (size_t) f->comment_list_length || alloc_size > (size_t) INT_MAX) {
+         f->comment_list_length = 0;
+         return error(f, VORBIS_invalid_setup);
+      }
+       f->comment_list = (char**) setup_malloc(f, (int) alloc_size);
+       if (f->comment_list == NULL) {
+          f->comment_list_length = 0;
+          return error(f, VORBIS_outofmem);
+       }
+       memset(f->comment_list, 0, alloc_size);
+    }
 
    for(i=0; i < f->comment_list_length; ++i) {
       len = get32_packet(f);
+      if (len < 0)                                     return error(f, VORBIS_invalid_setup);
       f->comment_list[i] = (char*)setup_malloc(f, sizeof(char) * (len+1));
       if (f->comment_list[i] == NULL)               return error(f, VORBIS_outofmem);
 
@@ -3873,20 +3892,26 @@ static int start_decoder(vorb *f)
             int len, sparse = c->sparse;
             float last=0;
             // pre-expand the lookup1-style multiplicands, to avoid a divide in the inner loop
-            if (sparse) {
-               if (c->sorted_entries == 0) goto skip;
-               c->multiplicands = (codetype *) setup_malloc(f, sizeof(c->multiplicands[0]) * c->sorted_entries * c->dimensions);
-            } else
-               c->multiplicands = (codetype *) setup_malloc(f, sizeof(c->multiplicands[0]) * c->entries        * c->dimensions);
-            if (c->multiplicands == NULL) { setup_temp_free(f,mults,sizeof(mults[0])*c->lookup_values); return error(f, VORBIS_outofmem); }
-            len = sparse ? c->sorted_entries : c->entries;
-            for (j=0; j < len; ++j) {
-               unsigned int z = sparse ? c->sorted_values[j] : j;
-               unsigned int div=1;
-               for (k=0; k < c->dimensions; ++k) {
-                  int off = (z / div) % c->lookup_values;
-                  float val = mults[off]*c->delta_value + c->minimum_value + last;
-                  c->multiplicands[j*c->dimensions + k] = val;
+             if (sparse) {
+                if (c->sorted_entries == 0) goto skip;
+                {  size_t sz = sizeof(c->multiplicands[0]) * (size_t) c->sorted_entries * (size_t) c->dimensions;
+                   if ((size_t)(int)sz != sz) { setup_temp_free(f,mults,sizeof(mults[0])*c->lookup_values); return error(f, VORBIS_invalid_setup); }
+                   c->multiplicands = (codetype *) setup_malloc(f, (int)sz);
+                }
+             } else
+                {  size_t sz = sizeof(c->multiplicands[0]) * (size_t) c->entries * (size_t) c->dimensions;
+                   if ((size_t)(int)sz != sz) { setup_temp_free(f,mults,sizeof(mults[0])*c->lookup_values); return error(f, VORBIS_invalid_setup); }
+                   c->multiplicands = (codetype *) setup_malloc(f, (int)sz);
+                }
+             if (c->multiplicands == NULL) { setup_temp_free(f,mults,sizeof(mults[0])*c->lookup_values); return error(f, VORBIS_outofmem); }
+             len = sparse ? c->sorted_entries : c->entries;
+             for (j=0; j < len; ++j) {
+                unsigned int z = sparse ? c->sorted_values[j] : j;
+                unsigned int div=1;
+                for (k=0; k < c->dimensions; ++k) {
+                   int off = (z / div) % c->lookup_values;
+                   float val = mults[off]*c->delta_value + c->minimum_value + last;
+                   c->multiplicands[j*c->dimensions + k] = val;
                   if (c->sequence_p)
                      last = val;
                   if (k+1 < c->dimensions) {
