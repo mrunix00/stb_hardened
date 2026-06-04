@@ -3,13 +3,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 int main()
 {
-    // BUG-STB_HEXWAVE-001: memset(output,0) erases the frequency-change BLAMP
-    // fixup. Compare two runs: same-freq (no BLAMP) vs diff-freq (BLAMP expected).
-    // In the buggy version, output[0..halfw-1] is identical in both cases because
-    // BLAMP is zeroed by memset. In the fixed version, they differ.
     int width = 32;
     int oversample = 16;
     size_t buf_size = (size_t)16 * width * (oversample + 1);
@@ -19,34 +16,53 @@ int main()
     hexwave_init(width, oversample, buf);
 
     int halfw = width / 2;
+
     HexWave osc_a, osc_b;
-    float out_a[256], out_b[256];
+    memset(&osc_a, 0, sizeof(osc_a));
+    memset(&osc_b, 0, sizeof(osc_b));
 
-    // Run A: same frequency (no BLAMP expected)
-    hexwave_create(&osc_a, 1, 0.5f, 0.0f, 0.0f); // triangle
-    hexwave_generate_samples(out_a, 128, &osc_a, 0.1f); // establish state
-    memset(out_a, 0, sizeof(out_a));
-    hexwave_generate_samples(out_a, 128, &osc_a, 0.1f); // same freq, no BLAMP
+    osc_a.current.reflect = 1;
+    osc_a.current.peak_time = 0.5f;
+    osc_a.current.half_height = 0.0f;
+    osc_a.current.zero_wait = 0.0f;
+    osc_a.have_pending = 0;
+    osc_a.t = 0.6f;
+    osc_a.prev_dt = 0.5f;
 
-    // Run B: different frequency (BLAMP expected)
-    hexwave_create(&osc_b, 1, 0.5f, 0.0f, 0.0f);
-    hexwave_generate_samples(out_b, 128, &osc_b, 0.1f); // establish state
-    memset(out_b, 0, sizeof(out_b));
-    hexwave_generate_samples(out_b, 128, &osc_b, 0.2f); // freq change, BLAMP
+    osc_b = osc_a;
+    osc_b.prev_dt = 0.1f;
+
+    float output_a[256], output_b[256];
+    memset(output_a, 0, sizeof(output_a));
+    memset(output_b, 0, sizeof(output_b));
+
+    float target_freq = 0.1f;
+    hexwave_generate_samples(output_a, 128, &osc_a, target_freq);
+    hexwave_generate_samples(output_b, 128, &osc_b, target_freq);
 
     int diff_count = 0;
+    float max_diff = 0;
+    int max_idx = -1;
     for (int i = 0; i < halfw; i++) {
-        float d = out_a[i] - out_b[i];
+        float d = output_a[i] - output_b[i];
         if (d < 0) d = -d;
         if (d > 1e-4f) diff_count++;
+        if (d > max_diff) { max_diff = d; max_idx = i; }
     }
 
+    printf("halfw=%d, diff_count=%d, max_diff=%.6f at idx %d\n",
+           halfw, diff_count, max_diff, max_idx);
+    printf("output_a[0..7]: ");
+    for (int i = 0; i < 8; i++) printf("%.5f ", output_a[i]);
+    printf("\noutput_b[0..7]: ");
+    for (int i = 0; i < 8; i++) printf("%.5f ", output_b[i]);
+    printf("\n");
+
     if (diff_count > 0) {
-        printf("BLAMP fixup detected (%d/%d samples differ > 1e-4) — fix working\n",
-               diff_count, halfw);
+        printf("BLAMP fixup detected in output[0..halfw-1] — fix working\n");
         return 0;
     } else {
-        printf("No BLAMP fixup found — bug present (memset erased it), or no diff req\n");
+        printf("No BLAMP fixup found — bug present (memset erased it)\n");
         return 1;
     }
 }

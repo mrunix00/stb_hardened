@@ -434,6 +434,17 @@ STB_HEXWAVE_DEF void hexwave_generate_samples(float *output, int num_samples, He
    // convert parameters to times and slopes
    hexwave_generate_linesegs(vert, hex, dt);
 
+   // copy the buffered data from last call and clear the rest of the output array
+   memset(output, 0, sizeof(float)*num_samples);
+   memset(temp_output, 0, 2*hexblep.width*sizeof(float));
+
+   if (num_samples >= hexblep.width) {
+      memcpy(output, hex->buffer, buffered_length);
+   } else {
+      // if the output is shorter than hexblep.width, we do all synthesis to temp_output
+      memcpy(temp_output, hex->buffer, buffered_length);
+   }
+
    if (hex->prev_dt != dt) {
       // if frequency changes, add a fixup at the derivative discontinuity starting at now
       float slope;
@@ -444,17 +455,6 @@ STB_HEXWAVE_DEF void hexwave_generate_samples(float *output, int num_samples, He
       if (slope != 0)
          hex_blamp(output, 0, (dt - hex->prev_dt)*slope);
       hex->prev_dt = dt;
-   }
-
-   // copy the buffered data from last call and clear the rest of the output array
-   memset(output, 0, sizeof(float)*num_samples);
-   memset(temp_output, 0, 2*hexblep.width*sizeof(float));
-
-   if (num_samples >= hexblep.width) {
-      memcpy(output, hex->buffer, buffered_length);
-   } else {
-      // if the output is shorter than hexblep.width, we do all synthesis to temp_output
-      memcpy(temp_output, hex->buffer, buffered_length);
    }
 
    for (pass=0; pass < 2; ++pass) {
@@ -581,6 +581,8 @@ STB_HEXWAVE_DEF void hexwave_init(int width, int oversample, float *user_buffer)
    n = 2*half+1;
 #ifndef STB_HEXWAVE_NO_ALLOCATION
    buffers = user_buffer ? user_buffer : (float *) malloc(sizeof(float) * n * 2);
+   if (buffers == NULL)
+      return;
 #endif
    step = buffers + 0*n;
    ramp = buffers + 1*n;
@@ -589,6 +591,8 @@ STB_HEXWAVE_DEF void hexwave_init(int width, int oversample, float *user_buffer)
       #ifndef STB_HEXWAVE_NO_ALLOCATION
       blep_buffer  = (float *) malloc(sizeof(float)*blep_buffer_count);
       blamp_buffer = (float *) malloc(sizeof(float)*blep_buffer_count);
+      if (blep_buffer == NULL || blamp_buffer == NULL)
+         return;
       #endif
    } else {
       blep_buffer  = ramp+n;
