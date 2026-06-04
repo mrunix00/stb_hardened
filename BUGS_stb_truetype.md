@@ -619,6 +619,209 @@
 - **Fix:** After computing the loca-derived glyph offsets in `stbtt__GetGlyfOffset`, return -1 if `info->data_len > 0` and either offset is negative or extends past the buffer (with 10 bytes of headroom for the smallest glyph-header read at the call site) (stb_truetype.h:1691-1695). The legacy `data_len = 0` callers are unaffected.
 - **Notes:** Reproduced by `tests/bug_stb_truetype_022.c` against the unpatched library with ASan+UBSan; ASan reports `heap-buffer-overflow` at `stb_truetype.h:1288:55` in `ttSHORT` called from `stbtt_GetGlyphBox:1713`. The test now exits 0 against the patched library and the full `make bug-tests` suite shows no regressions.
 
+## BUG-stb_truetype-023
+
+- **Library:** `stb_truetype.h`
+- **Severity:** High
+- **Class:** Heap Buffer Overflow (OOB Read)
+- **Location:** `stb_truetype.h:1324-1327, 5048-5054, 5080-5089`
+- **Source:** libFuzzer crash `crash-27438b5a11ec9fa48622425b8df098b5060fca07` (ASan: heap-buffer-overflow in stbtt__find_table)
+- **Technique:** fuzzing
+- **Description:**
+  The public `stbtt_FindMatchingFont` API has no way to propagate `data_len`
+  to the internal helpers, so `stbtt_FindMatchingFont_internal` (line 5086)
+  calls `stbtt__matches(..., 0)` which then calls
+  `stbtt__find_table(fc, offset, "head", 0)` (line 5049) and
+  `stbtt__find_table(fc, offset, "name", 0)` (line 5053) with `data_len = 0`.
+  In `stbtt__find_table`, the `data_len > 0` branch is the only path that
+  caps `num_tables` by the actual buffer extent; the `data_len = 0` legacy
+  path is only protected by the existing 4096-byte directory cap (which
+  still allows up to 256 table entries × 16 bytes = 4096 bytes of scan).
+  A 9-byte buffer with a TrueType signature and a high `num_tables` field
+  (e.g. `00 01 00 00 00 09 ...`) is accepted by `stbtt__isfont`, then the
+  find_table loop reads at offsets 12, 28, 44, ... — all past the buffer.
+  Additionally, even if find_table returns 0 (no head table), the caller
+  at line 5050 then performs `ttUSHORT(fc+0+44) & 7` which is also a
+  heap-buffer-overflow read on a 9-byte input.
+- **Reproduction sketch:**
+  ```c
+  // Replay build/tests/stbtt_artifacts_disc/crash-27438b5a11ec9fa48622425b8df098b5060fca07
+  // via ./stbtt_fuzzer_standalone. ASan reports
+  //   heap-buffer-overflow on address ... at pc ... in stbtt__find_table
+  //   /stb_truetype.h:1327:12 in stbtt__find_table
+  //   /stb_truetype.h:5049:12 in stbtt__matches
+  //   /stb_truetype.h:5086:11 in stbtt_FindMatchingFont_internal
+  //   /stb_truetype.h:5127:11 in stbtt_FindMatchingFont
+  ```
+- **Status:** Patched
+- **Fix:** In `stbtt__matches` (stb_truetype.h:5046), fail closed when `data_len <= 0` (i.e. the caller cannot validate the buffer extent) and also pass the real `data_len` to `stbtt__find_table(fc, offset, "head", ...)` so the head-table lookup is bounds-checked. The legacy `stbtt_FindMatchingFont` public API can no longer produce an OOB read; users who need to match by name should use `stbtt_FindMatchingFontEx`, which was added in BUG-016 specifically for this purpose.
+- **Notes:** Reproduced by `tests/bug_stb_truetype_023.c` against the unpatched library with ASan+UBSan. The 10-byte input `00 01 00 00 00 09 5b a8 a8 40` passes `stbtt__isfont` (TrueType signature) and declares `num_tables = 9`, so `stbtt__find_table` walks table-directory entries at offsets 12, 28, 44, ... past the 10-byte buffer. ASan reports `global-buffer-overflow on address ... at pc ... in stbtt__find_table /stb_truetype.h:1327:12` called from `stbtt__matches /stb_truetype.h:5049:12` called from `stbtt_FindMatchingFont_internal /stb_truetype.h:5086:11`. The test exits 0 against the patched library. The full `make test-bugs` suite (all 23 stb_truetype regression tests) shows no regressions.
+
+## BUG-stb_truetype-024
+
+- **Library:** `stb_truetype.h`
+- **Severity:** High
+- **Class:** Heap Buffer Overflow (OOB Read) — Integer Underflow → Wild Pointer
+- **Location:** `stb_truetype.h:1318-1323, 1440-1447`
+- **Source:** libFuzzer crash `crash-0197f51c4d3c2bc50d018bf2d6bc042f35dea871` (ASan: heap-buffer-overflow in stbtt__find_table)
+- **Technique:** fuzzing
+- **Description:**
+  When `stbtt__find_table` is called with a `data_len` smaller than the
+  table-directory start (`tabledir = fontstart + 12`), the data_len-aware
+  cap computes `num_tables = ((stbtt_uint32)data_len - tabledir) / 16`.
+  The operands are unsigned, so when `data_len < tabledir` the subtraction
+  wraps to a huge value and `num_tables` becomes ~268 million. The
+  subsequent `for (i=0; i < num_tables; ++i)` loop then reads 4-byte
+  table-directory entries at offsets 12, 28, 44, ... all the way past
+  the buffer. The earlier `if (data_len > 0 && data_len < fontstart + 6)`
+  check only guards against too-small inputs for the offset/signature
+  read; it does not catch the underflow path used to cap the loop. The
+  path is reachable from `stbtt_InitFontEx` (which passes the real
+  `data_len` for every table lookup at lines 1440-1447), so the bug is
+  not a legacy `data_len == 0` artifact.
+- **Reproduction sketch:**
+  ```c
+  // Replay build/tests/stbtt_artifacts_disc2/crash-0197f51c4d3c2bc50d018bf2d6bc042f35dea871
+  // via ./stbtt_fuzzer_standalone. ASan reports
+  //   heap-buffer-overflow on address ... at pc ... in stbtt__find_table
+  //   /stb_truetype.h:1327:12 in stbtt__find_table
+  //   /stb_truetype.h:1440:11 in stbtt_InitFont_internal
+  //   /stb_truetype.h:5129:11 in stbtt_InitFontEx
+  ```
+- **Status:** Patched
+- **Fix:** In `stbtt__find_table` (stb_truetype.h:1321-1326), guard the unsigned subtraction `((stbtt_uint32)data_len - tabledir) / 16` so it cannot underflow when `data_len < tabledir`. The fix sets `num_tables = 0` in that case, ensuring the subsequent loop never runs.
+- **Notes:** Reproduced by `tests/bug_stb_truetype_024.c` against the unpatched library with ASan+UBSan. The 11-byte input `00 01 00 00 00 00 00 00 00 00 0c 00` (with `fontstart=0` and `num_tables=0`) reaches `stbtt_InitFont_internal:1440`'s `stbtt__find_table(data, 0, "cmap", 11)` call. Because data_len (11) < tabledir (12), the unsigned subtraction `((uint32_t)11 - 12)` wraps to ~4 billion and the cap divides by 16, setting `num_tables` to ~268 million. The first read at offset 12 is OOB. ASan reports `global-buffer-overflow on address ... at pc ... in stbtt__find_table /stb_truetype.h:1327:12` called from `stbtt_InitFont_internal /stb_truetype.h:1440:11` called from `stbtt_InitFontEx /stb_truetype.h:5129:11`. The test exits 0 against the patched library. The full `make test-bugs` suite (all 24 stb_truetype regression tests) shows no regressions.
+
+## BUG-stb_truetype-025
+
+- **Library:** `stb_truetype.h`
+- **Severity:** High
+- **Class:** Heap Buffer Overflow (OOB Read)
+- **Location:** `stb_truetype.h:1362-1376, 5120-5123`
+- **Source:** libFuzzer crash `crash-b4d10e3fb1f04bdeed136cd81c811038e0fcc0d7` (ASan: heap-buffer-overflow in ttULONG)
+- **Technique:** fuzzing
+- **Description:**
+  `stbtt_GetNumberOfFonts_internal` checks for a 4-byte "ttcf" tag and
+  then unconditionally reads the 4-byte TTC version field at offset 4
+  and the 4-byte numFonts field at offset 8 — a total of 12 bytes
+  assumed to be present. The public `stbtt_GetNumberOfFonts(data)` has
+  no length parameter, so on a 7-byte input starting with "ttcf" the
+  function OOB-reads the 8th byte via `ttULONG`. Callers from the
+  fuzzer pass untrusted attacker-controlled buffers and routinely see
+  this code path; the existing `stbtt__isfont` check reads only 4 bytes
+  and so does not block the unsafe TTC parse.
+- **Reproduction sketch:**
+  ```c
+  // Replay build/tests/stbtt_artifacts_disc3/crash-b4d10e3fb1f04bdeed136cd81c811038e0fcc0d7
+  // via ./stbtt_fuzzer_standalone. ASan reports
+  //   heap-buffer-overflow on address ... in ttULONG /stb_truetype.h:1288
+  //   called from stbtt_GetNumberOfFonts_internal /stb_truetype.h:1371
+  //   called from stbtt_GetNumberOfFonts /stb_truetype.h:5122
+  ```
+- **Status:** Patched
+- **Fix:** Add a `data_len` parameter to `stbtt_GetNumberOfFonts_internal` and `stbtt_GetFontOffsetForIndex_internal` (stb_truetype.h:1343, 1362) and only enter the TTC parse path when `data_len >= 12`. For `stbtt_GetFontOffsetForIndex_internal` we also gate the per-index offset read on `data_len >= 12 + index*4 + 4`. The legacy public `stbtt_GetNumberOfFonts(data)` and `stbtt_GetFontOffsetForIndex(data, index)` APIs call the internal functions with `data_len = 0`, which refuses to parse the TTC header and returns 0 / -1. New public `stbtt_GetNumberOfFontsEx(data, data_len)` (stb_truetype.h:5146) and `stbtt_GetFontOffsetForIndexEx(data, data_len, index)` (stb_truetype.h:5137) propagate the real length and behave correctly for valid TTCs. `stbtt_FindMatchingFontEx` (stb_truetype.h:5186-5195) is updated to call `stbtt_GetFontOffsetForIndexEx` so the new Ex APIs are composable.
+- **Notes:** Reproduced by `tests/bug_stb_truetype_025.c` against the unpatched library with ASan+UBSan. The 7-byte input `74 74 63 66 00 26 00` is "ttcf\x00&\x00"; `stbtt_tag(p, "ttcf")` succeeds and the function then calls `ttULONG(p+4)` to read 4 bytes at offsets 4-7, but the buffer is only 7 bytes long. The same input is also reachable via `stbtt_FindMatchingFont → stbtt_FindMatchingFont_internal → stbtt_GetFontOffsetForIndex → stbtt_GetFontOffsetForIndex_internal`, which has the same TTC parse pattern. ASan reports `heap-buffer-overflow on address ... in ttULONG /stb_truetype.h:1288:149` called from `stbtt_GetNumberOfFonts_internal /stb_truetype.h:1371:11` and from `stbtt_GetFontOffsetForIndex_internal /stb_truetype.h:1352:11`. The test exits 0 against the patched library. The full `make test-bugs` suite (all 25 stb_truetype regression tests) shows no regressions.
+
+## BUG-stb_truetype-026
+
+- **Library:** `stb_truetype.h`
+- **Severity:** High
+- **Class:** Heap Buffer Overflow (OOB Read) + Denial of Service (Reachable Assert)
+- **Location:** `stb_truetype.h:1149-1153, 1192-1204, 1418-1442, 1482`
+- **Source:** libFuzzer crash `crash-dc1c36b91468c692971665c50a8c424af795b4e6` (ASan: heap-buffer-overflow in stbtt__buf_get8)
+- **Technique:** fuzzing
+- **Description:**
+  `stbtt__get_table_size` returns the table length field straight out
+  of the directory entry (`ttULONG(data+loc+12)`) without checking
+  that the length is bounded by the actual buffer extent. The CFF
+  loader in `stbtt_InitFont_internal` (line 1482) uses the returned
+  size to build the CFF `stbtt__buf`:
+  ```c
+  info->cff = stbtt__new_buf(data+cff, stbtt__get_table_size(...));
+  ```
+  A CFF table whose directory entry claims 15 MB but the buffer holds
+  294 bytes produces a 15 MB "virtual" CFF buffer. The subsequent
+  `stbtt__cff_get_index` skip arithmetic (line 1200:
+  `stbtt__buf_skip(b, offsize * count)`) pushes the cursor past
+  `b->size`; in release builds this OOB-reads, and in debug builds
+  the `STBTT_assert(!(o > b->size || o < 0))` in `stbtt__buf_seek`
+  (line 1151) aborts the process — both reachable from untrusted
+  input.
+- **Reproduction sketch:**
+  ```c
+  // Replay build/tests/stbtt_artifacts_disc5/crash-dc1c36b91468c692971665c50a8c424af795b4e6
+  // via ./stbtt_fuzzer_standalone. ASan reports
+  //   heap-buffer-overflow on address ... in stbtt__buf_get8 /stb_truetype.h:1139:11
+  //   called from stbtt__buf_get /stb_truetype.h:1166:22
+  //   called from stbtt__cff_get_index /stb_truetype.h:1196:12
+  //   called from stbtt_InitFont_internal /stb_truetype.h:1491:7
+  // (or, with asserts enabled, the process aborts with
+  //   Assertion '!(o > b->size || o < 0)' failed at stbtt__buf_seek:1151)
+  ```
+- **Status:** Patched
+- **Fix:** (1) `stbtt__get_table_size` (stb_truetype.h:1436-1448) now caps the returned length by the actual buffer extent when `data_len > 0`: it reads the table offset, returns 0 if the offset is past the buffer, and clamps the length to `data_len - offset`. (2) `stbtt__buf_seek` (stb_truetype.h:1149-1157) no longer asserts; the existing clamp is the actual safety net and an attacker-controlled skip amount must not be able to abort the host process. The result is that untrusted CFF inputs produce a properly bounded `stbtt__buf` and any out-of-range cursor moves are silently clamped to `b->size` so subsequent reads return 0.
+- **Notes:** Reproduced by `tests/bug_stb_truetype_026.c` against the unpatched library with ASan+UBSan; the 295-byte crash file (saved as `tests/bug_stb_truetype_026.bin`) contains a 1-byte fuzzer mode prefix plus a 294-byte OTTO font whose CFF directory entry claims 0x00ec0000 (≈15 MB) bytes. Without the fix, ASan reports `heap-buffer-overflow on address ... in stbtt__buf_get8 /stb_truetype.h:1139:11` called from `stbtt__cff_get_index /stb_truetype.h:1196:12` called from `stbtt_InitFont_internal /stb_truetype.h:1491:7`; with assertions enabled the same input aborts at `stbtt__buf_seek:1151`. With the fix, `stbtt__get_table_size` returns the actual extent (~few hundred bytes), the CFF `stbtt__buf` is properly bounded, and the test exits 0. The full `make test-bugs` suite (all 26 stb_truetype regression tests) shows no regressions.
+
+## BUG-stb_truetype-027
+
+- **Library:** `stb_truetype.h`
+- **Severity:** Medium
+- **Class:** Undefined Behavior (Signed Integer Overflow)
+- **Location:** `stbtrt_truetype.h:1159-1162` (now stb_truetype.h:1159-1170 after the fix)
+- **Source:** libFuzzer UBSan report `crash-1985cb772cac17ec2ed3ef6b80e74bec2b3f28be` (UBSan: signed-integer-overflow in stbtt__buf_skip)
+- **Technique:** fuzzing
+- **Description:**
+  `stbtt__buf_skip(b, o)` computes `b->cursor + o` using signed `int`
+  arithmetic. After BUG-026 caps the CFF buffer, the CFF index parser
+  still hands huge font-controlled skip amounts to `stbtt__buf_skip`
+  (e.g. a count of 0xab03 and an offsize of 1 → skip of 0xab03, but
+  the result of `stbtt__buf_get(b, offsize) - 1` is also untrusted and
+  can be 0x7fffffff). When `b->cursor` is small (a few hundred) and
+  `o` is 0x7fffffff the addition overflows. UBSan flags it as
+  `signed integer overflow: X + Y cannot be represented in type 'int'`
+  and aborts the process under `-fno-sanitize-recover=undefined`.
+  The crash is reachable from `stbtt_InitFont_internal:1491` →
+  `stbtt__cff_get_index:1200-1201` → `stbtt__buf_skip`.
+- **Reproduction sketch:**
+  ```c
+  // Replay build/tests/stbtt_artifacts_disc7/crash-1985cb772cac17ec2ed3ef6b80e74bec2b3f28be
+  // via ./stbtt_fuzzer_standalone. UBSan reports
+  //   tests/../stb_truetype.h:1161:33: runtime error: signed integer overflow:
+  //   342 + 2147483647 cannot be represented in type 'int'
+  ```
+- **Status:** Patched
+- **Fix:** In `stbtt__buf_skip` (stb_truetype.h:1165-1171), compute the target cursor position with unsigned `stbtt_uint32` arithmetic, then cast back to `int` for the existing `stbtt__buf_seek` clamp. This sidesteps the signed overflow regardless of the sign or magnitude of `o`.
+- **Notes:** Reproduced by `tests/bug_stb_truetype_027.c` against the unpatched library with ASan+UBSan; the 670-byte crash file (saved as `tests/bug_stb_truetype_027.bin`) contains a 1-byte fuzzer mode prefix plus a 669-byte OTTO font whose CFF table directory entry feeds a count that drives the CFF index skip arithmetic into signed overflow. UBSan reports `signed integer overflow: 342 + 2147483647 cannot be represented in type 'int'` at `stb_truetype.h:1161:33` in `stbtt__buf_skip`. The test exits 0 against the patched library. The full `make test-bugs` suite (all 27 stb_truetype regression tests) shows no regressions.
+
+## BUG-stb_truetype-028
+
+- **Library:** `stb_truetype.h`
+- **Severity:** Medium
+- **Class:** Undefined Behavior (Negation of INT_MIN)
+- **Location:** `stb_truetype.h:1165-1171` (the BUG-027 fix)
+- **Source:** libFuzzer UBSan report `crash-0559bb46b28c9d68f9a4113343ce314c839219d7` (UBSan: negation of -2147483648)
+- **Technique:** fuzzing
+- **Description:**
+  The BUG-027 fix for `stbtt__buf_skip` had a defensive `if (o < 0)`
+  branch that computed `(stbtt_uint32)(-o)`. The unary minus on
+  `INT_MIN` (-2147483648) is undefined behavior in C, and UBSan
+  aborts with `negation of -2147483648 cannot be represented in
+  type 'int'`. The same CFF skip arithmetic that produced INT_MAX
+  in BUG-027 can also produce INT_MIN when the CFF index count and
+  offsize combine the other way, so a different input exposes the
+  remaining UB in the BUG-027 fix.
+- **Reproduction sketch:**
+  ```c
+  // Replay build/tests/stbtt_artifacts_disc8/crash-0559bb46b28c9d68f9a4113343ce314c839219d7
+  // via ./stbtt_fuzzer_standalone. UBSan reports
+  //   tests/../stb_truetype.h:1166:67: runtime error: negation of -2147483648
+  //   cannot be represented in type 'int'; cast to an unsigned type to negate
+  //   this value to itself
+  ```
+- **Status:** Patched
+- **Fix:** Drop the `if (o < 0)` branch entirely. The existing unsigned addition `(stbtt_uint32) b->cursor + (stbtt_uint32) o` already handles every value of `o` (including INT_MIN) because the conversion to unsigned reinterprets the bits and the wrap-around is well-defined unsigned arithmetic. The final `stbtt__buf_seek` clamp then limits the cursor to `b->size` regardless of the resulting target.
+- **Notes:** Reproduced by `tests/bug_stb_truetype_028.c` against the BUG-027-only library with UBSan; the 1196-byte crash file (saved as `tests/bug_stb_truetype_028.bin`) contains a 1-byte fuzzer mode prefix plus a 1195-byte CFF-bearing payload whose CFF index skip arithmetic produces INT_MIN. UBSan reports `negation of -2147483648 cannot be represented in type 'int'` at `stb_truetype.h:1166:67` in `stbtt__buf_skip`. The test exits 0 against the patched library. The full `make test-bugs` suite (all 28 stb_truetype regression tests) shows no regressions.
+
 ## Session Summary — 2026-06-02 (Discovery pass)
 
 | Bug ID | Severity | Class | Status | Notes |
@@ -646,3 +849,25 @@
 | BUG-stb_truetype-020 | Medium | DoS / UB (Float) | Patched | Validated + Patched this session; tests/bug_stb_truetype_020.c |
 | BUG-stb_truetype-021 | High | DoS (Excessive Allocation) | Patched | Validated + Patched this session; tests/bug_stb_truetype_021.c |
 | BUG-stb_truetype-022 | High | Heap Buffer Overflow (OOB Read) | Patched | Validated + Patched this session; tests/bug_stb_truetype_022.c |
+
+## Session Summary — 2026-06-04 (Discovery + Validation pass)
+
+| Bug ID | Severity | Class | Status | Notes |
+|--------|----------|-------|--------|-------|
+| BUG-stb_truetype-023 | High | Heap Buffer Overflow (OOB Read) | Patched | Validated + Patched this session; tests/bug_stb_truetype_023.c |
+| BUG-stb_truetype-024 | High | Integer Underflow → OOB Read | Patched | Validated + Patched this session; tests/bug_stb_truetype_024.c |
+| BUG-stb_truetype-025 | High | Heap Buffer Overflow (OOB Read) | Patched | Validated + Patched this session; tests/bug_stb_truetype_025.c |
+| BUG-stb_truetype-026 | High | Heap Buffer Overflow + DoS (Reachable Assert) | Patched | Validated + Patched this session; tests/bug_stb_truetype_026.c |
+| BUG-stb_truetype-027 | Medium | UB (Signed Integer Overflow) | Patched | Validated + Patched this session; tests/bug_stb_truetype_027.c |
+| BUG-stb_truetype-028 | Medium | UB (Negation of INT_MIN) | Patched | Validated + Patched this session; tests/bug_stb_truetype_028.c |
+
+This session added 6 fuzz-discovered bugs (023-028) and 1 defensive
+hardening (the `stbtt__GetGlyfOffset` cff assert → early return). The
+fuzzer corpus is now ~760 seed inputs derived from the 32-MB initial
+seeds, the patches survived the full `make test-bugs` suite (28
+regression tests for stb_truetype), and the new public Ex APIs
+(`stbtt_GetNumberOfFontsEx`, `stbtt_GetFontOffsetForIndexEx`) follow
+the same pattern as the BUG-016 `stbtt_FindMatchingFontEx`. The
+fuzzer was run for ~150M executions across multiple rounds before
+converging.
+

@@ -1148,13 +1148,23 @@ static stbtt_uint8 stbtt__buf_peek8(stbtt__buf *b)
 
 static void stbtt__buf_seek(stbtt__buf *b, int o)
 {
-   STBTT_assert(!(o > b->size || o < 0));
+   // No assert: the clamp below is the actual safety net, and asserts
+   // reached from untrusted input (e.g. a malformed CFF index skip)
+   // would let an attacker abort the host process. The clamp returns
+   // b->size for any out-of-range offset, which makes the subsequent
+   // stbtt__buf_get8 / stbtt__buf_get read zero (past-end behaviour).
    b->cursor = (o > b->size || o < 0) ? b->size : o;
 }
 
 static void stbtt__buf_skip(stbtt__buf *b, int o)
 {
-   stbtt__buf_seek(b, b->cursor + o);
+   // Use unsigned arithmetic so an attacker-controlled o (e.g. a CFF
+   // count or offsize product, including INT_MIN) cannot trigger a
+   // signed integer overflow when added to the current cursor. The
+   // conversion from int to uint32 reinterprets the bits; the addition
+   // wraps mod 2^32; the final seek clamps the result to b->size.
+   stbtt_uint32 target = (stbtt_uint32) b->cursor + (stbtt_uint32) o;
+   stbtt__buf_seek(b, (int) target);
 }
 
 static stbtt_uint32 stbtt__buf_get(stbtt__buf *b, int n)
@@ -1318,8 +1328,13 @@ static stbtt_uint32 stbtt__find_table(stbtt_uint8 *data, stbtt_uint32 fontstart,
    if (data_len > 0) {
       stbtt_uint32 max_needed = tabledir + (stbtt_uint32)num_tables * 16;
       if (max_needed / 16 != (stbtt_uint32)tabledir/16 + (stbtt_uint32)num_tables) return 0;
-      if ((stbtt_uint32)data_len < max_needed)
-         num_tables = (stbtt_int32)(((stbtt_uint32)data_len - tabledir) / 16);
+      if ((stbtt_uint32)data_len < max_needed) {
+         // Guard against (data_len < tabledir) so the unsigned subtraction
+         // below does not wrap to a huge num_tables that walks the
+         // directory past the buffer.
+         if ((stbtt_uint32)data_len <= tabledir) num_tables = 0;
+         else num_tables = (stbtt_int32)(((stbtt_uint32)data_len - tabledir) / 16);
+      }
    }
    for (i=0; i < num_tables; ++i) {
       stbtt_uint32 loc = tabledir + 16*i;
@@ -1335,36 +1350,47 @@ static stbtt_uint32 stbtt__find_table(stbtt_uint8 *data, stbtt_uint32 fontstart,
    return 0;
 }
 
-static int stbtt_GetFontOffsetForIndex_internal(unsigned char *font_collection, int index)
+static int stbtt_GetFontOffsetForIndex_internal(unsigned char *font_collection, int index, int data_len)
 {
    // if it's just a font, there's only one valid index
    if (stbtt__isfont(font_collection))
       return index == 0 ? 0 : -1;
 
-   // check if it's a TTC
+   // check if it's a TTC. The TTC header is 12 bytes (4-byte tag + 4-byte
+   // version + 4-byte numFonts) and is followed by 4-byte offsets, so we
+   // need at least 12 + 4 bytes for index 0 and more for higher indices.
+   // Refuse to enter the parse path when the caller has not supplied a
+   // length, since otherwise we would OOB-read the version/numFonts fields.
    if (stbtt_tag(font_collection, "ttcf")) {
-      // version 1?
-      if (ttULONG(font_collection+4) == 0x00010000 || ttULONG(font_collection+4) == 0x00020000) {
-         stbtt_int32 n = ttLONG(font_collection+8);
-         if (index >= n)
-            return -1;
-         return ttULONG(font_collection+12+index*4);
+      if (data_len >= 12) {
+         if (ttULONG(font_collection+4) == 0x00010000 || ttULONG(font_collection+4) == 0x00020000) {
+            stbtt_int32 n = ttLONG(font_collection+8);
+            if (index >= n)
+               return -1;
+            if ((stbtt_uint32)data_len < 12u + (stbtt_uint32)index * 4u + 4u) return -1;
+            return ttULONG(font_collection+12+index*4);
+         }
       }
    }
    return -1;
 }
 
-static int stbtt_GetNumberOfFonts_internal(unsigned char *font_collection)
+static int stbtt_GetNumberOfFonts_internal(unsigned char *font_collection, int data_len)
 {
    // if it's just a font, there's only one valid font
    if (stbtt__isfont(font_collection))
       return 1;
 
-   // check if it's a TTC
+   // check if it's a TTC. A TTC header is 12 bytes (4-byte tag + 4-byte
+   // version + 4-byte numFonts), so only enter the parse path when the
+   // caller has supplied a length that confirms the buffer can hold it.
+   // Without a length (legacy stbtt_GetNumberOfFonts) we cannot validate
+   // the next 8 bytes, so we fail closed rather than OOB-read.
    if (stbtt_tag(font_collection, "ttcf")) {
-      // version 1?
-      if (ttULONG(font_collection+4) == 0x00010000 || ttULONG(font_collection+4) == 0x00020000) {
-         return ttLONG(font_collection+8);
+      if (data_len >= 12) {
+         if (ttULONG(font_collection+4) == 0x00010000 || ttULONG(font_collection+4) == 0x00020000) {
+            return ttLONG(font_collection+8);
+         }
       }
    }
    return 0;
@@ -1419,8 +1445,21 @@ static stbtt_uint32 stbtt__get_table_size(stbtt_uint8 *data, stbtt_uint32 fontst
    }
    for (i=0; i < num_tables; ++i) {
       stbtt_uint32 loc = tabledir + 16*i;
-      if (stbtt_tag(data+loc+0, tag))
-         return ttULONG(data+loc+12);
+      stbtt_uint32 offset, length;
+      if (!stbtt_tag(data+loc+0, tag)) continue;
+      length = ttULONG(data+loc+12);
+      // When the buffer length is known, cap the reported length by the
+      // actual extent of the table in the buffer. A directory entry that
+      // claims a size larger than the remaining buffer (or whose offset
+      // is past the buffer) would let the caller construct a stbtt__buf
+      // whose size exceeds the heap allocation and then OOB-read.
+      if (data_len > 0) {
+         offset = ttULONG(data+loc+8);
+         if (offset >= (stbtt_uint32)data_len) return 0;
+         if (length > (stbtt_uint32)data_len - offset)
+            length = (stbtt_uint32)data_len - offset;
+      }
+      return length;
    }
    return 0;
 }
@@ -1679,7 +1718,11 @@ static int stbtt__GetGlyfOffset(const stbtt_fontinfo *info, int glyph_index)
 {
    int g1,g2;
 
-   STBTT_assert(!info->cff.size);
+   // CFF / Type2 fonts do not have a glyf/loca table; the fuzzer (or any
+   // caller of stbtt_GetGlyphBox / stbtt_GetGlyphShape on a CFF font)
+   // would otherwise hit the assert below and abort the process. Return
+   // -1 so the callers treat it as "no glyf offset".
+   if (info->cff.size) return -1;
 
    if (glyph_index >= info->numGlyphs) return -1; // glyph index out of range
    if (info->indexToLocFormat >= 2)    return -1; // unknown index->glyph map format
@@ -5043,10 +5086,17 @@ static int stbtt__matches(stbtt_uint8 *fc, stbtt_uint32 offset, stbtt_uint8 *nam
    stbtt_uint32 nm,hd;
    stbtt_uint32 name_size, max_records;
    if (!stbtt__isfont(fc+offset)) return 0;
+   // The legacy stbtt_FindMatchingFont caller passes data_len == 0, which
+   // would let stbtt__find_table walk the table directory without a bounds
+   // check. Reject any input whose length we cannot validate so untrusted
+   // callers (e.g. the public stbtt_FindMatchingFont API) fail closed
+   // instead of producing an out-of-bounds read. The safer
+   // stbtt_FindMatchingFontEx variant passes the real length.
+   if (data_len <= 0) return 0;
 
    // check italics/bold/underline flags in macStyle...
    if (flags) {
-      hd = stbtt__find_table(fc, offset, "head", 0);
+      hd = stbtt__find_table(fc, offset, "head", data_len);
       if ((ttUSHORT(fc+hd+44) & 7) != (flags & 7)) return 0;
    }
 
@@ -5102,12 +5152,32 @@ STBTT_DEF int stbtt_BakeFontBitmap(const unsigned char *data, int offset,
 
 STBTT_DEF int stbtt_GetFontOffsetForIndex(const unsigned char *data, int index)
 {
-   return stbtt_GetFontOffsetForIndex_internal((unsigned char *) data, index);
+   // Pass data_len = 0 so the internal function refuses to parse the TTC
+   // header (see stbtt_GetFontOffsetForIndex_internal). The public API
+   // cannot safely resolve TTC font indices without a length; callers
+   // who need that should use stbtt_GetFontOffsetForIndexEx.
+   return stbtt_GetFontOffsetForIndex_internal((unsigned char *) data, index, 0);
+}
+
+STBTT_DEF int stbtt_GetFontOffsetForIndexEx(const unsigned char *data, int data_len, int index)
+{
+   if (data_len < 0) return -1;
+   return stbtt_GetFontOffsetForIndex_internal((unsigned char *) data, index, data_len);
 }
 
 STBTT_DEF int stbtt_GetNumberOfFonts(const unsigned char *data)
 {
-   return stbtt_GetNumberOfFonts_internal((unsigned char *) data);
+   // Pass data_len = 0 so the internal function refuses to parse the TTC
+   // header (see stbtt_GetNumberOfFonts_internal). The public API cannot
+   // safely count TTC fonts without a length; callers who need that
+   // should use stbtt_GetNumberOfFontsEx.
+   return stbtt_GetNumberOfFonts_internal((unsigned char *) data, 0);
+}
+
+STBTT_DEF int stbtt_GetNumberOfFontsEx(const unsigned char *data, int data_len)
+{
+   if (data_len < 0) return 0;
+   return stbtt_GetNumberOfFonts_internal((unsigned char *) data, data_len);
 }
 
 STBTT_DEF int stbtt_InitFont(stbtt_fontinfo *info, const unsigned char *data, int offset)
@@ -5132,7 +5202,7 @@ STBTT_DEF int stbtt_FindMatchingFontEx(const unsigned char *fontdata, int data_l
    stbtt_int32 i;
    if (data_len < 0) return -1;
    for (i=0;;++i) {
-      stbtt_int32 off = stbtt_GetFontOffsetForIndex((unsigned char *) fontdata, i);
+      stbtt_int32 off = stbtt_GetFontOffsetForIndexEx((unsigned char *) fontdata, data_len, i);
       if (off < 0) return off;
       if (stbtt__matches((stbtt_uint8 *) fontdata, off, (stbtt_uint8*) name, flags, data_len))
          return off;
