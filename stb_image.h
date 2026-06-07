@@ -5096,7 +5096,8 @@ static int stbi__parse_png_file(stbi__png *z, int scan, int req_comp)
       switch (c.type) {
          case STBI__PNG_TYPE('C','g','B','I'):
             is_iphone = 1;
-            stbi__skip(s, c.length);
+            if (c.length > INT_MAX) return stbi__err("chunk too large", "Corrupt PNG");
+            stbi__skip(s, (int) c.length);
             break;
          case STBI__PNG_TYPE('I','H','D','R'): {
             int comp,filter;
@@ -5252,7 +5253,8 @@ static int stbi__parse_png_file(stbi__png *z, int scan, int req_comp)
                #endif
                return stbi__err(invalid_chunk, "PNG not supported: unknown PNG chunk type");
             }
-            stbi__skip(s, c.length);
+            if (c.length > INT_MAX) return stbi__err("chunk too large", "Corrupt PNG");
+            stbi__skip(s, (int) c.length);
             break;
       }
       // end of PNG chunk, read and skip CRC

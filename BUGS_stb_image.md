@@ -682,3 +682,19 @@
   (`tests/bug_stb_image_024.c`) now reports `reason="too large"` and
   returns `NULL` immediately on the same 33-byte input.
 | BUG-stb_image-024 | High | DoS (Excessive Allocation + Slow Post-Process) | Patched | Fixed at stb_image.h:5904 — total-pixel bound in TGA loader |
+
+## BUG-stb_image-025
+
+- **Library:** `stb_image.h`
+- **Severity:** Low
+- **Class:** Integer Conversion / Signedness Error
+- **Location:** `stb_image.h:5255`
+- **Source:** libFuzzer run against `stbi_load_from_memory`/PNG/zlib memory APIs; minimized reproducer embedded in `tests/bug_stb_image_025.c` (original crash SHA1 `0197814e8121102905d881230150998a5a9197e2`, Clang `-fsanitize=integer` report)
+- **Technique:** fuzzing
+- **Description:**
+  The PNG parser stores chunk lengths as `stbi__uint32`, but passes an unknown ancillary chunk length directly to `stbi__skip`, whose `n` parameter is an `int`. A malformed PNG can set an ancillary chunk length such as `0xffffffff`; the implicit conversion changes it to `-1`, taking the negative skip path. With integer-conversion sanitization enabled this is a runtime error, and without sanitization it makes parser control flow depend on implementation-defined signed conversion for attacker-controlled input.
+- **Reproduction sketch:**
+  Compile a harness that calls `stbi_load_from_memory` on the fuzzer artifact with `-fsanitize=address,undefined,integer -fno-sanitize-recover=all`; the process aborts at `stb_image.h:5255` when handling the oversized ancillary PNG chunk.
+- **Status:** Patched
+- **Fix:** Added explicit `c.length > INT_MAX` rejection before both PNG `stbi__skip` calls at `stb_image.h:5099-5100` and `stb_image.h:5255-5256`, then cast the guarded value to `int`.
+
