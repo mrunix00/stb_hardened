@@ -871,3 +871,322 @@ the same pattern as the BUG-016 `stbtt_FindMatchingFontEx`. The
 fuzzer was run for ~150M executions across multiple rounds before
 converging.
 
+
+## BUG-stb_truetype-029
+
+- **Library:** `stb_truetype.h`
+- **Severity:** Critical
+- **Class:** Undefined Behavior (Missing Return Value)
+- **Location:** `stb_truetype.h:1271-1282`
+- **Source:** Static analysis — code review
+- **Technique:** static-analysis
+- **Description:**
+  `stbtt__cff_index_get` is declared to return `stbtt__buf` but the normal
+  (success) execution path at lines 1279-1281 reads `start` and `end` from the
+  CFF INDEX data, then falls through the closing brace at line 1282 without a
+  `return` statement. In C, this is undefined behavior (C11 6.9.1/12). The
+  compiler may produce garbage return values, crash, or behave unpredictably.
+  This function is critically important — it is used to extract CFF font index
+  entries, charstrings, subroutines, and font dictionaries:
+  - Called at line 1516 (`topdict = stbtt__cff_index_get(topdictidx, 0);`)
+    — CFF top dict parsing during font init.
+  - Called at line 2139 (`return stbtt__cff_index_get(idx, n);`) — subroutines.
+  - Called at line 2167 — CID font dict subrs.
+  - Called at line 2181 (`b = stbtt__cff_index_get(info->charstrings, glyph_index);`)
+    — charstring access for glyph rendering.
+  Every non-error call (when `i` is in range and `offsize` is valid) produces
+  undefined behavior because the function does not return a value.
+  Additionally, the `end < start` guard described in the BUG-018 fix is absent;
+  neither the guard nor any final `return` statement was ever added to this
+  function.
+- **Reproduction sketch:**
+  ```c
+  // Compile with -fsanitize=undefined and load any valid CFF/OTF font.
+  // Call stbtt_InitFont. The stbtt__cff_index_get call at line 1516 returns
+  // an uninitialized/garbage stbtt__buf for the topdict. UBSan may flag
+  // "returning from a function with no return statement" depending on the
+  // toolchain, but the resulting UB is always present.
+  ```
+- **Status:** Patched
+- **Fix:** Added missing `return stbtt__buf_range(...)` statement at the end of `stbtt__cff_index_get` (stb_truetype.h:1282) so the function actually returns the indexed CFF entry instead of falling through with undefined behavior. Also added `if (end < start) return stbtt__new_buf(NULL, 0);` guard to prevent signed UB in `end - start`. This fix completes the BUG-018 guard that was previously missing.
+
+## BUG-stb_truetype-030
+
+- **Library:** `stb_truetype.h`
+- **Severity:** High
+- **Class:** Heap Buffer Overflow (OOB Read) — Missing Bounds Check
+- **Location:** `stb_truetype.h:1750-1757`
+- **Source:** Static analysis — code review
+- **Technique:** static-analysis
+- **Description:**
+  `stbtt__GetGlyfOffsetEnd` computes the glyph end offset from the `loca` table
+  and returns it without validating it against `info->data_len`. The sibling
+  function `stbtt__GetGlyfOffset` (lines 1717-1748, fixed by BUG-022) validates
+  both `g1` and `g2` against `data_len` at lines 1742-1745, but
+  `stbtt__GetGlyfOffsetEnd` — which returns only the end offset (equivalent to
+  `g2`) — was not patched. The function also lacks the CFF font guard
+  (`if (info->cff.size) return -1;`) that `stbtt__GetGlyfOffset` has at line 1725.
+
+  Called at line 1818 in `stbtt__GetGlyphShapeTT`:
+  ```c
+  int glyph_end = stbtt__GetGlyfOffsetEnd(info, glyph_index);
+  ```
+  If `glyph_end` is attacker-controlled and points far past the buffer, then
+  at line 1826:
+  ```c
+  glyph_end_ptr = data + glyph_end;  // points past buffer
+  ```
+  The subsequent bounds checks at lines 1836 and 1840 compare against
+  `glyph_end_ptr`, which is now way past the buffer, making those checks
+  ineffective:
+  ```c
+  if (endPtsOfContours + numberOfContours * 2 + 2 > glyph_end_ptr)  // always false
+  if (points > glyph_end_ptr)                                         // always false
+  ```
+  The flag/coordinate reading loops at lines 1861-1910 then read
+  attacker-controlled amounts of data past the allocated buffer.
+- **Reproduction sketch:**
+  ```c
+  // Create a TrueType font where the loca entry for a glyph claims an end
+  // offset (g2) far past the buffer. Call stbtt_GetGlyphShape on that glyph.
+  // The glyph_end computed at line 1818 will be invalid, glyph_end_ptr will
+  // point past the buffer, and the bounds checks at lines 1836/1840 will
+  // pass trivially, causing OOB reads in the flag/coordinate loops.
+  ```
+- **Status:** Patched
+- **Fix:** Added CFF font guard and `data_len` bounds check in `stbtt__GetGlyfOffsetEnd` (stb_truetype.h:1754-1765), mirroring the BUG-022 fix already applied to `stbtt__GetGlyfOffset`. When `data_len > 0`, the function now returns -1 if the computed end offset (`g2`) is negative or exceeds the buffer size.
+
+## BUG-stb_truetype-031
+
+- **Library:** `stb_truetype.h`
+- **Severity:** High
+- **Class:** Heap Buffer Overflow (OOB Read)
+- **Location:** `stb_truetype.h:1413-1426`, `stb_truetype.h:2838-2853`
+- **Source:** Static analysis — code review
+- **Technique:** static-analysis
+- **Description:**
+  Two interconnected issues in the SVG table parsing path:
+
+  1. **`stbtt__get_svg` (lines 1413-1426):** The SVG subtable offset is computed
+     as `t + offset` where both are `stbtt_uint32` and `offset` is a
+     font-controlled `ttULONG` read from the SVG table header at offset 2. When
+     `t` is a valid table offset and `offset` is a large value, `t + offset` can
+     wrap around the 32-bit address space, producing an `info->svg` value that
+     points to an unexpected location in the buffer. No overflow check is performed.
+
+  2. **`stbtt_FindSVGDoc` (lines 2838-2853):** `numEntries = ttUSHORT(svg_doc_list)`
+     is read with no bounds check. If set to e.g. 0xFFFF by an attacker, the
+     `for` loop at line 2847 walks `svg_docs + (12 * i)` reading up to 12*65535
+     bytes past the documented list. Each loop iteration reads 4 ttUSHORT values
+     and a ttULONG from `svg_doc` offsets 0, 2, 4, 8 — all past the buffer for
+     large `i`. Additionally, there is no validation that `svg_doc_list`
+     (derived from `info->svg`) points to a region that can hold the declared
+     number of entries.
+
+  Reachable from `stbtt_GetGlyphSVG` (line 2855) and
+  `stbtt_GetCodepointSVG` (line 2872).
+- **Reproduction sketch:**
+  ```c
+  // Create a font with an SVG table whose document-list header claims
+  // numEntries = 0xFFFF but the SVG document-list region is tiny.
+  // Call stbtt_GetGlyphSVG on any glyph. The loop walks 12*65535 bytes
+  // past the buffer reading unchecked ttUSHORT/ttULONG values.
+  ```
+- **Status:** Patched
+- **Fix:** Two changes:
+  1. `stbtt__get_svg` (stb_truetype.h:1422-1431): Added overflow and bounds check for the SVG document list offset. When `data_len > 0`, validates that `t + offset` does not wrap and that the document list header (2 bytes for `numEntries`) fits within the buffer before storing to `info->svg`.
+  2. `stbtt_FindSVGDoc` (stb_truetype.h:2865-2868): Added `numEntries` capping against the remaining buffer. When `data_len > 0`, caps `numEntries` so that all 12-byte entries fit between `svg_docs` and `data + data_len`, preventing the OOB read loop.
+
+## BUG-stb_truetype-032
+
+- **Library:** `stb_truetype.h`
+- **Severity:** Medium
+- **Class:** Floating Point Division by Zero (Undefined Behavior)
+- **Location:** `stb_truetype.h:2827-2831`
+- **Source:** Static analysis — code review
+- **Technique:** static-analysis
+- **Description:**
+  `stbtt_ScaleForMappingEmToPixels` computes `pixels / unitsPerEm` without
+  checking whether `unitsPerEm` is zero. The TrueType spec requires
+  `unitsPerEm` to be in the range 16–16384, but a malicious font can set it
+  to 0. Division by zero in floating point produces `+inf` or `NaN`, which
+  propagates through subsequent computations. This function is called from
+  `stbtt_PackFontRangesGatherRects` (line 4328) when `font_size` is negative
+  (`STBTT_POINT_SIZE` usage). The resulting infinity causes UBSan
+  `float-cast-overflow` when converted to `int` downstream. Same root cause
+  class as BUG-020, which only fixed `stbtt_ScaleForPixelHeight` (line 2823)
+  but left `stbtt_ScaleForMappingEmToPixels` unguarded.
+- **Reproduction sketch:**
+  ```c
+  // Create a font with head.unitsPerEm = 0. Call
+  // stbtt_ScaleForMappingEmToPixels(info, 16.0f). The result is +inf,
+  // which propagates to subsequent glyph rendering calls, causing UBSan
+  // "inf is outside the range of representable values of type 'int'".
+  ```
+- **Status:** Patched
+- **Fix:** Added `if (unitsPerEm == 0) unitsPerEm = 1;` before the division at stb_truetype.h:2848, following the same pattern already used by `stbtt_ScaleForPixelHeight` at line 2841. Per the TrueType spec, `unitsPerEm` must be in the range 16–16384, but a malicious font can set it to 0, producing `inf` in the division and downstream `float-cast-overflow` UB.
+
+## BUG-stb_truetype-033
+
+- **Library:** `stb_truetype.h`
+- **Severity:** Medium
+- **Class:** Denial of Service (Reachable Assertion)
+- **Location:** `stb_truetype.h:1183`
+- **Source:** Static analysis — code review
+- **Technique:** static-analysis
+- **Description:**
+  `stbtt__new_buf` contains `STBTT_assert(size < 0x40000000)` at line 1183.
+  When `stbtt_InitFont` (the legacy API with `data_len=0`) is used,
+  `stbtt__get_table_size` does NOT cap the returned table length against the
+  buffer extent (BUG-026 only caps when `data_len > 0`). For a CFF font whose
+  directory entry claims a table size >= 1 GB (0x40000000), the assert fires
+  and aborts the process if `STBTT_assert` is enabled (which it is by default,
+  as `assert`). The call chain is:
+  `stbtt_InitFont` → `stbtt_InitFont_internal` (line 1505) →
+  `stbtt__new_buf(data+cff, stbtt__get_table_size(...))` → assert.
+
+  BUG-026 added table-size capping only when `data_len > 0`; the `data_len=0`
+  legacy path is still vulnerable.
+- **Reproduction sketch:**
+  ```c
+  // Create a CFF/OTF font whose CFF table directory entry claims
+  // a size >= 0x40000000 (1 GB) but pass data_len=0 to stbtt_InitFont
+  // (the legacy API). The assert at stb_truetype.h:1183 fires and
+  // aborts the process.
+  ```
+- **Status:** Patched
+- **Fix:** Added `else if (length >= 0x40000000) length = 0;` in `stbtt__get_table_size` (stb_truetype.h:1472) to cap unreasonably large table lengths even when `data_len == 0` (legacy API path). This prevents the `STBTT_assert(size < 0x40000000)` in `stbtt__new_buf` from firing on attacker-controlled table sizes, and follows the existing BUG-026 pattern that already capped lengths for `data_len > 0`.
+
+## BUG-stb_truetype-034
+
+- **Library:** `stb_truetype.h`
+- **Severity:** Medium
+- **Class:** Heap Buffer Overflow (OOB Read)
+- **Location:** `stb_truetype.h:5098-5101`
+- **Source:** Static analysis — code review
+- **Technique:** static-analysis
+- **Description:**
+  In `stbtt__matches`, when `flags != 0`, the code calls
+  `stbtt__find_table(fc, offset, "head", data_len)` at line 5099. If the head
+  table is not found, `hd = 0`. The subsequent read at line 5100:
+  ```c
+  if ((ttUSHORT(fc+hd+44) & 7) != (flags & 7)) return 0;
+  ```
+  dereferences `fc + 0 + 44` = `fc + 44`, reading 2 bytes at absolute offset 44
+  from the start of the font data. If the font buffer is smaller than 46 bytes
+  (i.e., 44 + sizeof(ttUSHORT)), this is a heap-buffer-overflow read. The
+  `data_len > 0` check at line 5095 prevents the legacy `data_len == 0` path,
+  but when `data_len > 0` and is small (e.g., a font with a valid signature but
+  only a 20-byte buffer and no head table), the OOB read occurs.
+
+  Reachable from `stbtt_FindMatchingFontEx` (which passes a real `data_len`).
+- **Reproduction sketch:**
+  ```c
+  // Create a 20-byte buffer with a valid font signature but no head table.
+  // Call stbtt_FindMatchingFontEx with flags != 0. The head table lookup
+  // returns 0, and ttUSHORT(fc+0+44) reads 2 bytes past the buffer.
+  ```
+- **Status:** Patched
+- **Fix:** Added `if (!hd) return 0;` guard in `stbtt__matches` (stb_truetype.h:5127) after the `stbtt__find_table` call for the "head" table. When the head table is absent (return value 0), `ttUSHORT(fc+hd+44)` would dereference `fc + 44` unconditionally, reading 2 bytes at an arbitrary offset from the font start that could be past the buffer.
+
+## BUG-stb_truetype-035
+
+- **Library:** `stb_truetype.h`
+- **Severity:** Low
+- **Class:** Heap Buffer Overflow (OOB Read) — Table extent
+- **Location:** `stb_truetype.h:2801-2810`
+- **Source:** Static analysis — code review
+- **Technique:** static-analysis
+- **Description:**
+  `stbtt_GetFontVMetricsOS2` reads fields at offsets 68, 70, and 72 from the
+  OS/2 table. The OS/2 table has multiple versions; version 0 is only 68 bytes
+  long. The `typoAscender`, `typoDescender`, and `typoLineGap` fields at offsets
+  68, 70, and 72 are only present in OS/2 version 1 and later. If the font
+  declares OS/2 version 0, reading at offsets 70 and 72 goes past the table's
+  declared extent (though still within the overall font buffer allocation in
+  practice). The `data_len` validation (BUG-014) only checks that the table
+  offset is within the buffer, not that the table is long enough for the
+  accessed fields. In conjunction with a carefully sized buffer where the OS/2
+  table sits exactly at the buffer boundary, this could produce OOB reads.
+- **Reproduction sketch:**
+  ```c
+  // Create a font with OS/2 version 0 (68 bytes total) where the OS/2 table
+  // sits within a buffer such that offset 72 falls exactly at the buffer end.
+  // Call stbtt_GetFontVMetricsOS2. ASan reports OOB read of 2 bytes at
+  // offset 70 or 72.
+  ```
+- **Status:** Patched
+- **Fix:** Added table-size check in `stbtt_GetFontVMetricsOS2` (stb_truetype.h:2829-2830): use `stbtt__get_table_size` to verify the OS/2 table is at least 74 bytes (OS/2 version 1+) before reading the typo fields at offsets 68/70/72. For version 0 tables (68 bytes), the function now returns 0.
+
+## BUG-stb_truetype-036
+
+- **Library:** `stb_truetype.h`
+- **Severity:** Low
+- **Class:** Heap Buffer Overflow (OOB Read) — Legacy path
+- **Location:** `stb_truetype.h:2812-2818`
+- **Source:** Static analysis — code review
+- **Technique:** static-analysis
+- **Description:**
+  `stbtt_GetFontBoundingBox` reads 4 `ttSHORT` fields at offsets 36, 38, 40,
+  and 42 from `info->head` without any bounds check. While `info->head` is
+  validated to be non-zero during `stbtt_InitFont_internal` (line 1488) and is
+  validated against `data_len` by BUG-014 when `data_len > 0`, there is no
+  check that the head table is actually long enough to contain the bounding
+  box fields (head must be at least 54 bytes per spec). In the legacy
+  `data_len = 0` path, the head table offset is not validated at all.
+
+  The same pattern applies to `stbtt_GetFontVMetrics` (lines 2794-2799,
+  accessing `info->hhea + 4/6/8`) and `stbtt_GetGlyphHMetrics` (lines
+  2465-2474, accessing `info->hhea + 34` and `info->hmtx`). These functions
+  all rely on the table offsets being valid and the tables being long enough,
+  without performing their own bounds checks.
+- **Reproduction sketch:**
+  ```c
+  // Use stbtt_InitFont (legacy, data_len=0) with a font whose head table
+  // offset points to a location where 42 bytes of readable data do not
+  // exist. Call stbtt_GetFontBoundingBox. The ttSHORT reads at
+  // info->head+36..42 are OOB.
+  ```
+- **Status:** Patched
+- **Fix:** Added `stbtt__get_table_size` check in `stbtt_GetFontBoundingBox` (stb_truetype.h:2838-2843): skip reading the bbox fields if the "head" table is declared smaller than 44 bytes. Prevents OOB read from a truncated or misdirected head table.
+
+## Session Summary — 2026-06-09
+
+| Bug ID | Severity | Class | Status | Notes |
+|--------|----------|-------|--------|-------|
+| BUG-stb_truetype-001 | Critical | Heap Buffer Overflow | Patched | Previous session |
+| BUG-stb_truetype-002 | High | Integer Overflow → Heap Buffer Overflow | Invalid | Could not reproduce |
+| BUG-stb_truetype-003 | High | Stack Overflow (Unbounded Recursion) | Patched | Recursion depth guard |
+| BUG-stb_truetype-004 | High | Heap Buffer Overflow (OOB Read) | Patched | Early isfont check |
+| BUG-stb_truetype-005 | High | Heap Buffer Overflow (Write) | Patched | Validate padded pack rects |
+| BUG-stb_truetype-006 | High | Heap Buffer Overflow (OOB Read) | Patched | loca-derived glyph offset bounds |
+| BUG-stb_truetype-007 | High | Heap Buffer Overflow (OOB Read) | Patched | get_table_size helper |
+| BUG-stb_truetype-008 | Medium | DoS (Assertion Failure) | Patched | Removed assert(0) in cff_int |
+| BUG-stb_truetype-009 | High | OOB Read | Patched | Integer overflow in dir size |
+| BUG-stb_truetype-010 | High | Heap Buffer Overflow (OOB Read) | Patched | Bounds check in init for index_map |
+| BUG-stb_truetype-011 | High | Heap Buffer Overflow (OOB Read) | Patched | cmap subtable bounds check |
+| BUG-stb_truetype-012 | High | Heap Buffer Overflow (OOB Read) | Patched | data_len field + bounds checks |
+| BUG-stb_truetype-013 | Medium | Heap Buffer Overflow (OOB Read) | Patched | Format 12/13 cmap bounds |
+| BUG-stb_truetype-014 | High | Heap Buffer Overflow (OOB Read) | Patched | data_len in find_table |
+| BUG-stb_truetype-015 | High | Heap Buffer Overflow (OOB Read) | Patched | cmap record bounds in init |
+| BUG-stb_truetype-016 | High | Heap Buffer Overflow (OOB Read) | Patched | Clamp name-record loop |
+| BUG-stb_truetype-017 | Medium | DoS (Assertion Failure) | Patched | Replace asserts in cff_index |
+| BUG-stb_truetype-018 | Medium | Undefined Behavior (Signed Overflow) | Patched | end < start guard |
+| BUG-stb_truetype-019 | Medium | UB (Signed Overflow in Shift) | Patched | Cast to uint32 before shift |
+| BUG-stb_truetype-020 | Medium | DoS / UB (Float) | Patched | Zero fheight guard |
+| BUG-stb_truetype-021 | High | DoS (Excessive Allocation) | Patched | Cap gbm w/h at 0xffff |
+| BUG-stb_truetype-022 | High | Heap Buffer Overflow (OOB Read) | Patched | loca-derived glyph offset check |
+| BUG-stb_truetype-023 | High | Heap Buffer Overflow (OOB Read) | Patched | matches() name-table bounds |
+| BUG-stb_truetype-024 | High | Heap Buffer Overflow (OOB Read) | Patched | find_table num_tables cap |
+| BUG-stb_truetype-025 | High | Heap Buffer Overflow (OOB Read) | Patched | data_len in GetNumberOfFonts |
+| BUG-stb_truetype-026 | High | Heap Buffer Overflow + DoS | Patched | get_table_size caps + assert fix |
+| BUG-stb_truetype-027 | Medium | UB (Signed Overflow) | Patched | buf_skip cap at size |
+| BUG-stb_truetype-028 | Medium | UB (Negation of INT_MIN) | Patched | Remove negative offset branch |
+| BUG-stb_truetype-029 | Critical | UB (Missing Return) | Patched | Added return and end<start |
+| BUG-stb_truetype-030 | High | Heap Buffer Overflow (OOB Read) | Patched | data_len bounds in GetGlyfOffsetEnd |
+| BUG-stb_truetype-031 | High | Heap Buffer Overflow (OOB Read) | Patched | SVG table overflow + numEntries |
+| BUG-stb_truetype-032 | Medium | Float Div by Zero | Patched | unitsPerEm zero guard |
+| BUG-stb_truetype-033 | Medium | DoS (Reachable Assert) | Patched | get_table_size data_len=0 cap |
+| BUG-stb_truetype-034 | Medium | OOB Read | Patched | hd null guard in matches |
+| BUG-stb_truetype-035 | Low | Heap Buffer Overflow (OOB Read) | Patched | OS/2 table size >= 74 check |
+| BUG-stb_truetype-036 | Low | Heap Buffer Overflow (OOB Read) | Patched | head table size >= 44 check |

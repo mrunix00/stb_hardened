@@ -1279,6 +1279,8 @@ static stbtt__buf stbtt__cff_index_get(stbtt__buf b, int i)
    stbtt__buf_skip(&b, i*offsize);
    start = stbtt__buf_get(&b, offsize);
    end = stbtt__buf_get(&b, offsize);
+   if (end < start) return stbtt__new_buf(NULL, 0);
+   return stbtt__buf_range(&b, 2+(count+1)*offsize+start, end-start);
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -1417,7 +1419,16 @@ static int stbtt__get_svg(stbtt_fontinfo *info)
       t = stbtt__find_table(info->data, info->fontstart, "SVG ", info->data_len);
       if (t) {
          stbtt_uint32 offset = ttULONG(info->data + t + 2);
-         info->svg = t + offset;
+         info->svg = 0;
+         if (info->data_len > 0) {
+            stbtt_uint32 svg_doc_offset = t + offset;
+            // Check: no wrap-around (svg_doc_offset >= t) and fits in buffer
+            // with room for at least the numEntries field (2 bytes)
+            if (svg_doc_offset >= t && svg_doc_offset + 2 <= (stbtt_uint32)info->data_len)
+               info->svg = svg_doc_offset;
+         } else {
+            info->svg = t + offset;
+         }
       } else {
          info->svg = 0;
       }
@@ -1458,6 +1469,8 @@ static stbtt_uint32 stbtt__get_table_size(stbtt_uint8 *data, stbtt_uint32 fontst
          if (offset >= (stbtt_uint32)data_len) return 0;
          if (length > (stbtt_uint32)data_len - offset)
             length = (stbtt_uint32)data_len - offset;
+      } else if (length >= 0x40000000) {
+         length = 0;
       }
       return length;
    }
@@ -1749,11 +1762,18 @@ static int stbtt__GetGlyfOffset(const stbtt_fontinfo *info, int glyph_index)
 
 static int stbtt__GetGlyfOffsetEnd(const stbtt_fontinfo *info, int glyph_index)
 {
+   int g2;
+   if (info->cff.size)      return -1;
    if (glyph_index >= info->numGlyphs) return -1;
    if (info->indexToLocFormat >= 2)    return -1;
    if (info->indexToLocFormat == 0)
-      return info->glyf + ttUSHORT(info->data + info->loca + glyph_index * 2 + 2) * 2;
-   return info->glyf + ttULONG(info->data + info->loca + glyph_index * 4 + 4);
+      g2 = info->glyf + ttUSHORT(info->data + info->loca + glyph_index * 2 + 2) * 2;
+   else
+      g2 = info->glyf + ttULONG(info->data + info->loca + glyph_index * 4 + 4);
+   if (info->data_len > 0) {
+      if (g2 < 0 || g2 > info->data_len) return -1;
+   }
+   return g2;
 }
 
 static int stbtt__GetGlyphInfoT2(const stbtt_fontinfo *info, int glyph_index, int *x0, int *y0, int *x1, int *y1);
@@ -2803,6 +2823,12 @@ STBTT_DEF int  stbtt_GetFontVMetricsOS2(const stbtt_fontinfo *info, int *typoAsc
    int tab = stbtt__find_table(info->data, info->fontstart, "OS/2", info->data_len);
    if (!tab)
       return 0;
+   // The typo ascender/descender/linegap fields at offsets 68, 70, 72
+   // exist only in OS/2 version 1+ (table length >= 74).  Version 0 is
+   // only 68 bytes; reading past that is OOB if the table is at the
+   // buffer boundary.
+   if (stbtt__get_table_size(info->data, info->fontstart, "OS/2", info->data_len) < 74)
+      return 0;
    if (typoAscent ) *typoAscent  = ttSHORT(info->data+tab + 68);
    if (typoDescent) *typoDescent = ttSHORT(info->data+tab + 70);
    if (typoLineGap) *typoLineGap = ttSHORT(info->data+tab + 72);
@@ -2811,6 +2837,10 @@ STBTT_DEF int  stbtt_GetFontVMetricsOS2(const stbtt_fontinfo *info, int *typoAsc
 
 STBTT_DEF void stbtt_GetFontBoundingBox(const stbtt_fontinfo *info, int *x0, int *y0, int *x1, int *y1)
 {
+   if (stbtt__get_table_size(info->data, info->fontstart, "head", info->data_len) < 44) {
+      *x0 = 0; *y0 = 0; *x1 = 0; *y1 = 0;
+      return;
+   }
    *x0 = ttSHORT(info->data + info->head + 36);
    *y0 = ttSHORT(info->data + info->head + 38);
    *x1 = ttSHORT(info->data + info->head + 40);
@@ -2827,6 +2857,7 @@ STBTT_DEF float stbtt_ScaleForPixelHeight(const stbtt_fontinfo *info, float heig
 STBTT_DEF float stbtt_ScaleForMappingEmToPixels(const stbtt_fontinfo *info, float pixels)
 {
    int unitsPerEm = ttUSHORT(info->data + info->head + 18);
+   if (unitsPerEm == 0) unitsPerEm = 1;
    return pixels / unitsPerEm;
 }
 
@@ -2843,6 +2874,11 @@ STBTT_DEF stbtt_uint8 *stbtt_FindSVGDoc(const stbtt_fontinfo *info, int gl)
 
    int numEntries = ttUSHORT(svg_doc_list);
    stbtt_uint8 *svg_docs = svg_doc_list + 2;
+
+   if (info->data_len > 0) {
+      int maxEntries = (int)((info->data + info->data_len - svg_docs) / 12);
+      if (numEntries > maxEntries) numEntries = maxEntries;
+   }
 
    for(i=0; i<numEntries; i++) {
       stbtt_uint8 *svg_doc = svg_docs + (12 * i);
@@ -5097,6 +5133,7 @@ static int stbtt__matches(stbtt_uint8 *fc, stbtt_uint32 offset, stbtt_uint8 *nam
    // check italics/bold/underline flags in macStyle...
    if (flags) {
       hd = stbtt__find_table(fc, offset, "head", data_len);
+      if (!hd) return 0;
       if ((ttUSHORT(fc+hd+44) & 7) != (flags & 7)) return 0;
    }
 
