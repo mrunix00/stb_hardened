@@ -6598,7 +6598,7 @@ static void stbir__vertical_scatter_loop( stbir__info const * stbir_info, stbir_
 static stbir__kernel_callback * stbir__builtin_kernels[] =   { 0, stbir__filter_trapezoid,  stbir__filter_triangle, stbir__filter_cubic, stbir__filter_catmullrom, stbir__filter_mitchell, stbir__filter_point };
 static stbir__support_callback * stbir__builtin_supports[] = { 0, stbir__support_trapezoid, stbir__support_one,     stbir__support_two,  stbir__support_two,       stbir__support_two,     stbir__support_zeropoint5 };
 
-static void stbir__set_sampler(stbir__sampler * samp, stbir_filter filter, stbir__kernel_callback * kernel, stbir__support_callback * support, stbir_edge edge, stbir__scale_info * scale_info, int always_gather, void * user_data )
+static int stbir__set_sampler(stbir__sampler * samp, stbir_filter filter, stbir__kernel_callback * kernel, stbir__support_callback * support, stbir_edge edge, stbir__scale_info * scale_info, int always_gather, void * user_data )
 {
   // set filter
   if (filter == 0)
@@ -6667,7 +6667,12 @@ static void stbir__set_sampler(stbir__sampler * samp, stbir_filter filter, stbir
   samp->num_contributors = stbir__get_contributors(samp, samp->is_gather);
 
   samp->contributors_size = samp->num_contributors * sizeof(stbir__contributors);
-  samp->coefficients_size = samp->num_contributors * samp->coefficient_width * sizeof(float) + sizeof(float)*STBIR_INPUT_CALLBACK_PADDING; // extra sizeof(float) is padding
+  {
+    size_t cs;
+    if ( !stbir__mul_add_overflow_check( (size_t)samp->num_contributors, (size_t)samp->coefficient_width * sizeof(float), sizeof(float)*STBIR_INPUT_CALLBACK_PADDING, &cs ) || ( cs > 0x7fffffff ) )
+      return 0;
+    samp->coefficients_size = (int)cs;
+  }
 
   samp->gather_prescatter_contributors = 0;
   samp->gather_prescatter_coefficients = 0;
@@ -6675,9 +6680,15 @@ static void stbir__set_sampler(stbir__sampler * samp, stbir_filter filter, stbir
   {
     samp->gather_prescatter_coefficient_width = samp->filter_pixel_width;
     samp->gather_prescatter_num_contributors  = stbir__get_contributors(samp, 2);
+    {
+      size_t cs;
+      if ( !stbir__mul_add_overflow_check( (size_t)samp->gather_prescatter_num_contributors, (size_t)samp->gather_prescatter_coefficient_width * sizeof(float), 0, &cs ) || ( cs > 0x7fffffff ) )
+        return 0;
+      samp->gather_prescatter_coefficients_size = (int)cs;
+    }
     samp->gather_prescatter_contributors_size = samp->gather_prescatter_num_contributors * sizeof(stbir__contributors);
-    samp->gather_prescatter_coefficients_size = samp->gather_prescatter_num_contributors * samp->gather_prescatter_coefficient_width * sizeof(float);
   }
+  return 1;
 }
 
 static void stbir__get_conservative_extents( stbir__sampler * samp, stbir__contributors * range, void * user_data )
@@ -7790,6 +7801,8 @@ STBIRDEF void stbir_resize_init( STBIR_RESIZE * resize,
 // You can update parameters any time after resize_init
 STBIRDEF void stbir_set_datatypes( STBIR_RESIZE * resize, stbir_datatype input_type, stbir_datatype output_type )  // by default, datatype from resize_init
 {
+  if ( (unsigned)input_type > STBIR_TYPE_HALF_FLOAT ) return;
+  if ( (unsigned)output_type > STBIR_TYPE_HALF_FLOAT ) return;
   resize->input_data_type = input_type;
   resize->output_data_type = output_type;
   if ( ( resize->samplers ) && ( !resize->needs_rebuild ) )
@@ -7828,6 +7841,8 @@ STBIRDEF void stbir_set_buffer_ptrs( STBIR_RESIZE * resize, const void * input_p
 
 STBIRDEF int stbir_set_edgemodes( STBIR_RESIZE * resize, stbir_edge horizontal_edge, stbir_edge vertical_edge )       // CLAMP by default
 {
+  if ( (unsigned)horizontal_edge > STBIR_EDGE_ZERO ) return 0;
+  if ( (unsigned)vertical_edge > STBIR_EDGE_ZERO ) return 0;
   resize->horizontal_edge = horizontal_edge;
   resize->vertical_edge = vertical_edge;
   resize->needs_rebuild = 1;
@@ -7945,6 +7960,13 @@ static int stbir__perform_build( STBIR_RESIZE * resize, int splits )
   STBIR_RETURN_ERROR_AND_ASSERT( (unsigned)resize->vertical_filter >= STBIR_FILTER_OTHER)
   #undef STBIR_RETURN_ERROR_AND_ASSERT
 
+  if ( (unsigned)resize->horizontal_edge > STBIR_EDGE_ZERO ) return 0;
+  if ( (unsigned)resize->vertical_edge > STBIR_EDGE_ZERO ) return 0;
+  if ( (unsigned)resize->input_pixel_layout_public > STBIRI_AR_PM ) return 0;
+  if ( (unsigned)resize->output_pixel_layout_public > STBIRI_AR_PM ) return 0;
+  if ( (unsigned)resize->input_data_type > STBIR_TYPE_HALF_FLOAT ) return 0;
+  if ( (unsigned)resize->output_data_type > STBIR_TYPE_HALF_FLOAT ) return 0;
+
   if ( splits <= 0 )
     return 0;
 
@@ -7965,9 +7987,9 @@ static int stbir__perform_build( STBIR_RESIZE * resize, int splits )
   if ( ( horizontal.scale_info.output_sub_size == 0 ) || ( vertical.scale_info.output_sub_size == 0 ) )
     return 0;
 
-  stbir__set_sampler(&horizontal, resize->horizontal_filter, resize->horizontal_filter_kernel, resize->horizontal_filter_support, resize->horizontal_edge, &horizontal.scale_info, 1, resize->user_data );
+  if ( !stbir__set_sampler(&horizontal, resize->horizontal_filter, resize->horizontal_filter_kernel, resize->horizontal_filter_support, resize->horizontal_edge, &horizontal.scale_info, 1, resize->user_data ) ) return 0;
   stbir__get_conservative_extents( &horizontal, &conservative, resize->user_data );
-  stbir__set_sampler(&vertical, resize->vertical_filter, resize->vertical_filter_kernel, resize->vertical_filter_support, resize->vertical_edge, &vertical.scale_info, 0, resize->user_data );
+  if ( !stbir__set_sampler(&vertical, resize->vertical_filter, resize->vertical_filter_kernel, resize->vertical_filter_support, resize->vertical_edge, &vertical.scale_info, 0, resize->user_data ) ) return 0;
 
   if ( ( vertical.scale_info.output_sub_size / splits ) < STBIR_FORCE_MINIMUM_SCANLINES_FOR_SPLITS ) // each split should be a minimum of 4 scanlines (handwavey choice)
   {
@@ -8103,6 +8125,7 @@ static void * stbir_quick_resize_helper( const void *input_pixels , int input_w 
   void * start_ptr;
   void * free_ptr;
 
+  if ( (unsigned)data_type > STBIR_TYPE_HALF_FLOAT ) return 0;
   {
     size_t scanline_output;
     if ( !stbir__mul_add_overflow_check( (size_t)output_w, (size_t)stbir__type_size[ data_type ] * stbir__pixel_channels[ stbir__pixel_layout_convert_public_to_internal[ pixel_layout ] ], 0, &scanline_output ) )
@@ -8120,7 +8143,11 @@ static void * stbir_quick_resize_helper( const void *input_pixels , int input_w 
   // abs value for inverted images (negative pitches)
   positive_output_stride_in_bytes = output_stride_in_bytes;
   if ( positive_output_stride_in_bytes < 0 )
+  {
+    // -INT_MIN is undefined behavior; guard against INT_MIN
+    if ( (unsigned)positive_output_stride_in_bytes == 0x80000000u ) return 0;
     positive_output_stride_in_bytes = -positive_output_stride_in_bytes;
+  }
 
   // is the requested stride smaller than the scanline output? if so, just fail
   if ( positive_output_stride_in_bytes < scanline_output_in_bytes )
