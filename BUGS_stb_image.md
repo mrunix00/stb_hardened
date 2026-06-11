@@ -698,3 +698,90 @@
 - **Status:** Patched
 - **Fix:** Added explicit `c.length > INT_MAX` rejection before both PNG `stbi__skip` calls at `stb_image.h:5099-5100` and `stb_image.h:5255-5256`, then cast the guarded value to `int`.
 
+## BUG-stb_image-026
+
+- **Library:** `stb_image.h`
+- **Severity:** Medium
+- **Class:** Out-of-bounds Read / Information Disclosure (Stack Leak)
+- **Location:** `stb_image.h:5559-5564, 5601-5611`
+- **Source:** static-analysis
+- **Technique:** static-analysis
+- **Description:**
+  In `stbi__bmp_load`, the palette count `psize` is computed as:
+  ```c
+  if (info.hsz == 12) {
+     if (info.bpp < 24)
+        psize = (info.offset - info.extra_read - 24) / 3;
+  } else {
+     if (info.bpp < 16)
+        psize = (info.offset - info.extra_read - info.hsz) >> 2;
+  }
+  ```
+  where `info.offset` is a signed `int` from the BMP file header. When `offset` is smaller than `extra_read + hsz`, the subtraction yields a negative `psize`.
+
+  The guard at line 5566 (`if (psize == 0)`) only catches zero, and the guard at line 5603 (`if (psize == 0 || psize > 256)`) does not catch negative values because an `int` comparison `-14 > 256` is false. With a negative `psize`, the palette-read loop `for (i=0; i < psize; ++i)` is skipped, leaving the stack-allocated `pal[256][4]` completely uninitialized.
+
+  The existing BUG-019 fix added bounds checks (`if (v >= psize) v = psize-1`) on pixel values at lines 5642 and 5649, but with negative `psize` the comparison promotes `psize` to a large unsigned value via C's usual arithmetic conversions, so the clamp is never triggered. Pixel values (0–255) therefore index directly into the uninitialized stack palette, leaking stack contents into the output image.
+
+- **Reproduction sketch:**
+  ```c
+  // A BMP with offset=0, hsz=40, bpp=8. psize = (0-14-40)>>2 = -14.
+  // Palette not read; stack pal[256][4] uninitialized.
+  // Pixels decoded using this uninitialized data as colors.
+  unsigned char bmp[] = {
+    0x42,0x4D,             // 'BM'
+    0x36,0x00,0x00,0x00,   // filesize (ignored)
+    0x00,0x00,             // reserved
+    0x00,0x00,             // reserved
+    0x00,0x00,0x00,0x00,   // offset = 0  ← too small
+    0x28,0x00,0x00,0x00,   // hsz = 40
+    0x02,0x00,0x00,0x00,   // width = 2
+    0x02,0x00,0x00,0x00,   // height = 2
+    0x01,0x00,             // planes = 1
+    0x08,0x00,             // bpp = 8
+    0x00,0x00,0x00,0x00,   // compression = 0
+    0x00,0x00,0x00,0x00,   // image size (ignored)
+    0x00,0x00,0x00,0x00,   // xres (ignored)
+    0x00,0x00,0x00,0x00,   // yres (ignored)
+    0x00,0x00,0x00,0x00,   // colors used (ignored)
+    0x00,0x00,0x00,0x00,   // colors important (ignored)
+    0xFF,0x00,0x00,0x00,   // pixel data: index 255
+    0x00,0x00,0x00,0x00,
+  };
+   stbi_load_from_memory(bmp, sizeof(bmp), &x, &y, &c, 0);
+   // Output pixels will contain uninitialized stack data for color values.
+   ```
+- **Status:** Patched
+- **Fix:** Changed `psize == 0` to `psize <= 0` at stb_image.h:5603. When `info.offset` is smaller than `extra_read + hsz`, `psize` becomes negative, which previously bypassed both validation checks (`psize == 0` and `psize > 256`). The negative psize allowed the palette-read loop to be skipped while leaving `pal[256][4]` on the stack uninitialized. The `<=` check catches negative values in addition to zero, causing the decoder to reject the malformed BMP with "invalid" instead of reading from uninitialized stack memory.
+
+## Session Summary — 2026-06-09
+
+| Bug ID | Severity | Class | Status | Notes |
+|--------|----------|-------|--------|-------|
+| BUG-stb_image-001 | High | Integer Overflow | Patched | GIF stride overflow |
+| BUG-stb_image-002 | Medium | Stack Overflow | Patched | GIF LZW recursion depth |
+| BUG-stb_image-003 | High | Integer Overflow | Invalid | PSD already protected |
+| BUG-stb_image-004 | High | Integer Overflow | Invalid | GIF already protected |
+| BUG-stb_image-005 | High | OOB Read / Heap BOF | Patched | GIF two_back pointer fix |
+| BUG-stb_image-006 | High | Heap BOF | Patched | GIF vertical flip bytes_per_pixel |
+| BUG-stb_image-007 | Medium | Uninitialized Data | Patched | TGA/HDR getn return check |
+| BUG-stb_image-008 | High | Double-Free | Patched | GIF zero-stride guard |
+| BUG-stb_image-009 | Medium | NULL Deref | Patched | PIC convert_format guard |
+| BUG-stb_image-010 | Medium | NULL Deref | Patched | GIF flip guard |
+| BUG-stb_image-011 | Medium | Integer Overflow | Patched | convert_format16 mad4 |
+| BUG-stb_image-012 | High | Integer Overflow | Invalid | 32-bit only, not exploitable on 64-bit |
+| BUG-stb_image-013 | High | Integer Overflow | Invalid | 32-bit only, not exploitable on 64-bit |
+| BUG-stb_image-014 | Medium | OOB Read | Patched | PNG palette bounds clamp |
+| BUG-stb_image-015 | Low | Logic Error | Patched | PNG IHDR depth validation |
+| BUG-stb_image-016 | High | Integer Overflow | Invalid | glibc realloc frees, not exploitable |
+| BUG-stb_image-017 | Medium | Logic Error | Patched | JPEG marker error propagation |
+| BUG-stb_image-018 | Medium | Uninitialized Memory | Patched | JPEG coeff buffer memset |
+| BUG-stb_image-019 | Medium | OOB Read | Patched | BMP palette bounds clamp |
+| BUG-stb_image-020 | Medium | Integer Overflow | Invalid | Neutered by BUG-001 |
+| BUG-stb_image-021 | Medium | DoS (Slow Loop) | Patched | TGA RLE EOF break |
+| BUG-stb_image-022 | High | DoS (Excessive Alloc) | Patched | GIF total-pixel bound |
+| BUG-stb_image-023 | Low | Undefined Behavior | Unvalidated | stbi__getn memcpy with n=0 |
+| BUG-stb_image-024 | High | DoS (Excessive Alloc) | Patched | TGA total-pixel bound |
+| BUG-stb_image-025 | Medium | Integer Conversion | Patched | PNG chunk length INT_MAX guard |
+| BUG-stb_image-026 | Medium | OOB Read / Stack Leak | Patched | BMP negative psize → uninitialized palette, fixed at stb_image.h:5603 |
+
