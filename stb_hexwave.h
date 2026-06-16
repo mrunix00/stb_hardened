@@ -317,8 +317,13 @@ static void hex_add_oversampled_bleplike(float *output, float time_since_transit
    float *d1,*d2;
    float lerpweight;
    int i, bw = hexblep.width;
-
-   int slot = (int) (time_since_transition * hexblep.oversample);
+   float fslot = time_since_transition * hexblep.oversample;
+   // Clamp to valid range; NaN comparisons are always false
+   if (!(fslot >= 0.0f))
+      fslot = 0.0f;
+   else if (fslot > (float) hexblep.oversample)
+      fslot = (float) hexblep.oversample;
+   int slot = (int) fslot;
    if (slot >= hexblep.oversample)
       slot = hexblep.oversample-1; // clamp in case the floats overshoot
 
@@ -423,6 +428,10 @@ STB_HEXWAVE_DEF void hexwave_generate_samples(float *output, int num_samples, He
    float temp_output[2*STB_HEXWAVE_MAX_BLEP_LENGTH];
    int buffered_length = sizeof(float)*hexblep.width;
    float dt = (float) fabs(freq);
+   // Guard against invalid freq: NaN, 0, or extremely large values
+   // that cause infinite loop (t -= 1.0 doesn't change t at float32 precision)
+   if (!(dt > 0.0f) || dt > 1.0f)
+      dt = 1.0f;
    float recip_dt = (dt == 0.0f) ? 0.0f : 1.0f / dt;
 
    int halfw = hexblep.width/2;
@@ -448,12 +457,13 @@ STB_HEXWAVE_DEF void hexwave_generate_samples(float *output, int num_samples, He
    if (hex->prev_dt != dt) {
       // if frequency changes, add a fixup at the derivative discontinuity starting at now
       float slope;
+      float *blamp_target = (num_samples >= hexblep.width) ? output : temp_output;
       for (j=1; j < 6; ++j)
          if (t < vert[j].t)
             break;
       slope = vert[j].s;
       if (slope != 0)
-         hex_blamp(output, 0, (dt - hex->prev_dt)*slope);
+         hex_blamp(blamp_target, 0, (dt - hex->prev_dt)*slope);
       hex->prev_dt = dt;
    }
 
@@ -486,8 +496,13 @@ STB_HEXWAVE_DEF void hexwave_generate_samples(float *output, int num_samples, He
 
       // determine current segment
       for (j=0; j < 8; ++j)
-         if (t < vert[j+1].t)                                  
+         if (t < vert[j+1].t)
             break;
+
+      if (j == 8) {
+         j = 0;
+         t -= 1.0f;
+      }
 
       i = i0;
       for(;;) {

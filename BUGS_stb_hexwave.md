@@ -92,7 +92,83 @@
 - **Status:** Patched
 - **Fix:** Same oversample bounds check as BUG-STB_HEXWAVE-004. The `if (oversample < 1) oversample = 1` guard at `stb_hexwave.h:573` prevents the division by zero.
 
-## Session Summary — 2026-06-04
+## BUG-STB_HEXWAVE-006
+
+- **Library:** `stb_hexwave.h`
+- **Severity:** High
+- **Class:** Heap Buffer Overflow
+- **Location:** `stb_hexwave.h:456`
+- **Source:** fuzzer crash (ASan heap-buffer-overflow)
+- **Technique:** fuzzing
+- **Description:**
+  In `hexwave_generate_samples`, the frequency-change BLAMP fixup at line 456 writes `hex_blamp(output, 0, ...)` which writes `hexblep.width` floats to `output[0..bw-1]`. However, when `num_samples < hexblep.width`, the output buffer is smaller than `hexblep.width` floats. The fixup should write to `temp_output` (where all synthesis goes for short outputs) instead of `output`. The BLAMP writes past the end of the output buffer, causing a heap buffer overflow. Additionally, the fixup data is lost because the short-output path only copies `num_samples` floats from `temp_output` to `output`, never incorporating the BLAMP data.
+- **Reproduction sketch:**
+  ```c
+  hexwave_init(32, 16, user_buffer);
+  HexWave osc;
+  hexwave_create(&osc, 1, 0, 0, 0);
+  osc.prev_dt = 0.5f; // different from freq to trigger BLAMP
+  float out[4];
+  hexwave_generate_samples(out, 4, &osc, 0.1f); // num_samples < hexblep.width
+  ```
+- **Status:** Patched
+- **Fix:** Redirected BLAMP fixup to `temp_output` when `num_samples < hexblep.width` (line 452). Previously wrote to `output` even in short-buffer mode; now selects target buffer based on `num_samples >= hexblep.width`.
+
+## BUG-STB_HEXWAVE-007
+
+- **Library:** `stb_hexwave.h`
+- **Severity:** High
+- **Class:** Out-of-Bounds Array Access
+- **Location:** `stb_hexwave.h:488-494`
+- **Source:** fuzzer (UBSan: index 9 out of bounds for hexvert[9])
+- **Technique:** fuzzing
+- **Description:**
+  In `hexwave_generate_samples`, the initial segment-finding loop at line 488 iterates `for (j=0; j < 8; ++j) if (t < vert[j+1].t) break;`. When `t` is NaN or `t >= 1.0` (greater than all segment endpoint times), no segment matches and the loop exits with `j=8`. The subsequent `while (t < vert[j+1].t)` at line 494 then accesses `vert[9]`, which is one past the end of the `hexvert vert[9]` array. When `t` is NaN, `j` keeps incrementing past 8 in the outer loop (since `j == 8` is the only reset condition, and when `j` passes 8 the wrap never triggers), reading further OOB on each iteration.
+- **Reproduction sketch:**
+  ```c
+  hexwave_init(32, 16, user_buffer);
+  HexWave osc;
+  hexwave_create(&osc, 1, 0, 0, 0);
+  osc.t = 1e10f; // or NAN
+  float out[128];
+  hexwave_generate_samples(out, 128, &osc, 0.1f);
+  ```
+- **Status:** Patched
+- **Fix:** Added wrap-around check after segment-finding loop: when `j == 8` (t >= 1.0), reset `j = 0` and `t -= 1.0f` (line 491). Without this, `vert[9]` was accessed OOB. The wrap logic mirrors the existing wrap at line 508.
+
+## BUG-STB_HEXWAVE-008
+
+- **Library:** `stb_hexwave.h`
+- **Severity:** Medium
+- **Class:** Undefined Behavior (Float-to-Int Overflow) / Potential OOB Read
+- **Location:** `stb_hexwave.h:321`
+- **Source:** fuzzer (UBSan: nan outside range of representable int values)
+- **Technique:** fuzzing
+- **Description:**
+  In `hex_add_oversampled_bleplike`, the expression `(int)(time_since_transition * hexblep.oversample)` at line 321 can receive NaN or Infinity values from upstream when `freq` is NaN (propagating through `dt` and `recip_dt`). Converting NaN or Infinity to `int` is undefined behavior; on x86-64 this produces `INT_MIN` (0x80000000). The resulting `slot` value (INT_MIN) then causes `d1 = &data[slot * bw]` where `slot * bw` is a huge negative offset (or wraps to a large positive offset via signed overflow), leading to an out-of-bounds read from the BLEP/BLAMP tables. ASan confirmed a heap-buffer-overflow READ via this path.
+- **Reproduction sketch:**
+  Call `hexwave_generate_samples` with `freq = NAN` and parameters that cause the main-loop BLEP/BLAMP transitions to fire before the segment-scan walk-off.
+- **Status:** Patched
+- **Fix:** Clamped float multiplication `time_since_transition * oversample` before the int cast in `hex_add_oversampled_bleplike` (line 321). Used intermediate `float fslot` clamped to `[0, oversample]` range before cast, preventing overflow UB even with extreme time values.
+
+## BUG-STB_HEXWAVE-009
+
+- **Library:** `stb_hexwave.h`
+- **Severity:** Low
+- **Class:** Denial of Service (Infinite Loop)
+- **Location:** `stb_hexwave.h:418-544`
+- **Source:** fuzzer (libFuzzer timeout)
+- **Technique:** fuzzing
+- **Description:**
+  When `freq` is NaN, `fabs(NaN) = NaN`, so `dt = NaN` and `t += dt` makes `t = NaN`. The outer `for(;;)` loop's inner `while (t < vert[j+1].t)` condition is always false (NaN comparisons always return false), so the inner loop is never entered. The transition code runs, `j` increments to 8, `t -= 1.0` (still NaN), and this repeats forever. Similarly, when `freq = FLT_MAX` (~3.4e+38), the single inner-loop sample jumps `t` to ~3.4e+38, and after the `j == 8` wrap, `t -= 1.0` does not change the value in float32 precision, locking the loop. The function never returns, causing a denial of service.
+- **Reproduction sketch:**
+  ```c
+  hexwave_generate_samples(out, 128, &osc, INFINITY); // hangs
+  ```
+- **Status:** Patched
+- **Fix:** Added dt guard at `hexwave_generate_samples` entry (line 430): `if (!(dt > 0.0f) || dt > 1.0f) dt = 1.0f;` catches NaN (NaN comparisons are always false), Infinity (fabs(Inf) = Inf, Inf > 1 is true), and FLT_MAX (3.4e38 > 1). Clamping to 1.0 prevents the float32 precision wrap failure (`t -= 1.0f` has no effect on FLT_MAX-scale values) and ensures valid dt for `min_len = dt/256.0f`. Also updated BUG-008's fslot clamp to handle NaN via `!(fslot >= 0.0f)` pattern.
+
+## Session Summary — 2026-06-17
 
 | Bug ID | Severity | Class | Status | Notes |
 |--------|----------|-------|--------|-------|
@@ -101,3 +177,7 @@
 | BUG-STB_HEXWAVE-003 | Medium | NULL Pointer Dereference | Patched | Added NULL checks after malloc at stb_hexwave.h:584,592 |
 | BUG-STB_HEXWAVE-004 | High | Integer Overflow / Heap Buffer Overflow | Patched | (pre-existing) Added oversample bounds check at stb_hexwave.h:573-576 |
 | BUG-STB_HEXWAVE-005 | Informational | Division by Zero | Patched | (pre-existing) Same oversample bounds check as BUG-004 |
+| BUG-STB_HEXWAVE-006 | High | Heap Buffer Overflow | Patched | Redirected freq-change BLAMP to temp_output when num_samples < hexblep.width |
+| BUG-STB_HEXWAVE-007 | High | Out-of-Bounds Array Access | Patched | Added j==8 wrap after segment-finding loop to prevent vert[9] access |
+| BUG-STB_HEXWAVE-008 | Medium | Undefined Behavior (Float-to-Int Overflow) | Patched | Clamped fslot to [0, oversample] before int cast, with NaN guard |
+| BUG-STB_HEXWAVE-009 | Low | Denial of Service (Infinite Loop) | Patched | Clamped dt at entry to catch NaN/Inf/FLT_MAX |
