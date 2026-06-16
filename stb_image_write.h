@@ -491,6 +491,8 @@ static int stbiw__outfile(stbi__write_context *s, int rgb_dir, int vdir, int x, 
 
 static int stbi_write_bmp_core(stbi__write_context *s, int x, int y, int comp, const void *data)
 {
+   if (comp <= 0 || comp > 4)
+      return 0;
    if (comp != 4) {
       // write RGB bitmap
       int pad = (-x*3) & 3;
@@ -531,9 +533,12 @@ STBIWDEF int stbi_write_bmp(char const *filename, int x, int y, int comp, const 
 
 static int stbi_write_tga_core(stbi__write_context *s, int x, int y, int comp, void *data)
 {
-   int has_alpha = (comp == 2 || comp == 4);
-   int colorbytes = has_alpha ? comp-1 : comp;
-   int format = colorbytes < 2 ? 3 : 2; // 3 color channels (RGB/RGBA) = 2, 1 color channel (Y/YA) = 3
+   int has_alpha, colorbytes, format;
+   if (comp <= 0 || comp > 4)
+      return 0;
+   has_alpha = (comp == 2 || comp == 4);
+   colorbytes = has_alpha ? comp-1 : comp;
+   format = colorbytes < 2 ? 3 : 2;
 
    if (y < 0 || x < 0)
       return 0;
@@ -760,11 +765,12 @@ static void stbiw__write_hdr_scanline(stbi__write_context *s, int width, int nco
 
 static int stbi_write_hdr_core(stbi__write_context *s, int x, int y, int comp, float *data)
 {
-   if (y <= 0 || x <= 0 || data == NULL)
+   if (y <= 0 || x <= 0 || data == NULL || comp <= 0 || comp > 4)
       return 0;
    else {
       // Each component is stored separately. Allocate scratch space for full output scanline.
-      unsigned char *scratch = (unsigned char *) STBIW_MALLOC(x*4);
+      unsigned char *scratch = (unsigned char *) STBIW_MALLOC((size_t)x * 4);
+      if (!scratch) return 0;
       int i, len;
       char buffer[128];
       char header[] = "#?RADIANCE\n# Written by stb_image_write.h\nFORMAT=32-bit_rle_rgbe\n";
@@ -1134,7 +1140,10 @@ STBIWDEF unsigned char *stbi_write_png_to_mem(const unsigned char *pixels, int s
    signed char *line_buffer;
    int j,zlen;
 
-   if (stride_bytes == 0)
+   if (x <= 0 || y <= 0 || n <= 0 || n > 4)
+      return 0;
+
+   if (stride_bytes < x * n)
       stride_bytes = x * n;
 
    if (force_filter >= 5) {

@@ -105,7 +105,102 @@
 - **Status:** Patched
 - **Fix:** Changed the NaN/Infinity guard in `stbiw__linear_to_rgbe` (line 644) from `if (maxcomp < 1e-32f)` to `if (!(maxcomp >= 1e-32f) || maxcomp * 2 == maxcomp)`. The `!(maxcomp >= 1e-32f)` form catches NaN (NaN comparisons always return false) and negative/zero values. The `maxcomp * 2 == maxcomp` check catches infinity (the only positive value for which `x*2 == x` is true). Non-finite inputs are now safely treated as black (all-zero RGBE).
 
-## Session Summary — 2026-05-30
+## BUG-stb_image_write-006
+
+- **Library:** `stb_image_write.h`
+- **Severity:** Medium
+- **Class:** Out-of-Bounds Read
+- **Location:** `stb_image_write.h:424,470,492,532,560`
+- **Source:** static-analysis note
+- **Technique:** static-analysis
+- **Description:**
+  The BMP writer (`stbi_write_bmp_core` at line 492) and TGA writer (`stbi_write_tga_core` at line 532) accept a `comp` parameter without validating it is in the valid range 1–4. When `comp <= 0` or `comp > 4`, the pixel offset computation `(j*x+i)*comp` at line 470 (and `j*x*comp` at line 560 in the TGA RLE path) produces negative or out-of-bounds addresses into the input pixel buffer. In `stbiw__write_pixel` at line 424, `d[comp-1]` reads from arbitrary memory before the buffer when `comp <= 0`. In the TGA RLE path, `memcmp` at line 570 receives a negative `comp` as the size argument, which when cast to `size_t` becomes a huge positive value, causing an out-of-bounds read that typically results in a segfault.
+- **Reproduction sketch:**
+  ```c
+  #define STB_IMAGE_WRITE_IMPLEMENTATION
+  #include "stb_image_write.h"
+  int main() {
+      unsigned char buf[64] = {0};
+      stbi_write_bmp_to_func(my_write_func, NULL, 1, 1, 0, buf);  // comp=0
+      stbi_write_tga_to_func(my_write_func, NULL, 1, 1, -1, buf); // comp=-1
+      return 0;
+  }
+   ```
+- **Status:** Patched
+- **Fix:** Added `if (comp <= 0 || comp > 4) return 0;` at `stb_image_write.h:495` in `stbi_write_bmp_core` and `stb_image_write.h:536` in `stbi_write_tga_core` to reject invalid component counts before they reach the pixel encoding and comparison routines.
+
+## BUG-stb_image_write-007
+
+- **Library:** `stb_image_write.h`
+- **Severity:** Medium
+- **Class:** Out-of-Bounds Read
+- **Location:** `stb_image_write.h:761,672`
+- **Source:** static-analysis note
+- **Technique:** static-analysis
+- **Description:**
+  `stbi_write_hdr_core` at line 761 validates `x`, `y`, and `data` but does not validate `comp`. If `comp` is supplied as 0 or negative, `stbiw__write_hdr_scanline` at line 672 computes pixel offsets as `scanline[x*ncomp + ...]` where `ncomp` is the unvalidated `comp`. When `comp < 0`, `x*ncomp` is negative, and `scanline[x*ncomp + 0]` reads from memory before the input buffer, leaking heap data into the output HDR file. When `comp > 4`, the `switch(ncomp)` at line 685 falls to the `default` case, replicating the first component across all three channels, which while not an OOB read per se, produces semantically incorrect output.
+- **Reproduction sketch:**
+  ```c
+  #define STB_IMAGE_WRITE_IMPLEMENTATION
+  #include "stb_image_write.h"
+  int main() {
+      float buf[4] = { 1.0f, 0.5f, 0.0f, 1.0f };
+      stbi_write_hdr_to_func(my_write_func, NULL, 1, 1, -1, buf); // comp=-1
+      return 0;
+  }
+  ```
+- **Status:** Patched
+- **Fix:** Added `|| comp <= 0 || comp > 4` to the input validation at `stb_image_write.h:763` in `stbi_write_hdr_core` to reject invalid component counts before they reach the scanline read loop.
+
+## BUG-stb_image_write-008
+
+- **Library:** `stb_image_write.h`
+- **Severity:** Medium
+- **Class:** Unchecked Return Value (NULL Pointer Dereference)
+- **Location:** `stb_image_write.h:767`
+- **Source:** static-analysis note
+- **Technique:** static-analysis
+- **Description:**
+  In `stbi_write_hdr_core`, the scratch buffer allocation `STBIW_MALLOC(x*4)` at line 767 casts from `int` to `size_t` without overflow protection, and the return value is not checked for NULL. If `x*4` overflows the signed `int` range (when `x > 536,870,911`), the resulting value is implementation-defined (typically negative), which when passed to `malloc` as `size_t` becomes an enormous positive allocation that commonly fails. More directly, even with valid `x` values, if `STBIW_MALLOC` returns NULL due to memory pressure, `scratch` is NULL and is immediately passed to `stbiw__write_hdr_scanline` at line 781 which writes `rgbe[4]` and `scratch[width*3+width-1]` through the NULL pointer, causing a NULL-pointer dereference and crash. All other writers in the file check their `STBIW_MALLOC` returns.
+- **Reproduction sketch:**
+  ```c
+  // Force malloc failure (e.g. via LD_PRELOAD or by requesting huge allocation)
+  #define STB_IMAGE_WRITE_IMPLEMENTATION
+  #include "stb_image_write.h"
+  int main() {
+      float buf[4] = { 1.0f, 0.0f, 0.0f, 1.0f };
+      stbi_write_hdr_to_func(my_write_func, NULL, 536870912, 1, 3, buf); // x*4 overflows
+      return 0;
+  }
+  ```
+- **Status:** Patched
+- **Fix:** Changed `STBIW_MALLOC(x*4)` to `STBIW_MALLOC((size_t)x * 4)` at `stb_image_write.h:767` to avoid signed integer overflow in the size computation, and added `if (!scratch) return 0;` to check the allocation return value before use.
+
+## BUG-stb_image_write-010
+
+- **Library:** `stb_image_write.h`
+- **Severity:** High
+- **Class:** Heap Buffer Over-read (Out-of-Bounds Read)
+- **Location:** `stb_image_write.h:1105,1109`
+- **Source:** Fuzzer crash (ASan: heap-buffer-overflow in stbiw__encode_png_line)
+- **Technique:** fuzzing
+- **Description:**
+  `stbi_write_png_to_mem()` at line 1146-1147 validates `stride_bytes` only for the zero case (setting it to `x*n`), but does not reject negative values or values smaller than `x*n`. When `stride_bytes` is negative, the row pointer computation in `stbiw__encode_png_line` at line 1105 (`z = pixels + stride_bytes * y`) produces a pointer before the start of the pixel buffer for any row beyond the first. The subsequent `memcpy(line_buffer, z, width*n)` at line 1109 reads from arbitrary memory before the allocation, causing a heap-buffer-overflow. Similarly, a stride smaller than `x*n` causes overlapping row reads and potential out-of-bounds access.
+- **Reproduction sketch:**
+  ```c
+  #define STB_IMAGE_WRITE_IMPLEMENTATION
+  #include "stb_image_write.h"
+  void my_write(void *c, void *d, int n) { (void)c; (void)d; (void)n; }
+  int main() {
+      unsigned char buf[27] = {0};
+      stbi_write_png_to_func(my_write, NULL, 3, 3, 3, buf, -9);  // negative stride
+      return 0;
+  }
+  ```
+- **Status:** Patched
+- **Fix:** Changed the stride validation at `stb_image_write.h:1146` from `if (stride_bytes == 0)` to `if (stride_bytes < x * n)` to reject negative strides and strides too small to cover one row of pixels. Previously only the zero stride was corrected; any insufficient stride caused out-of-bounds row pointer computation in `stbiw__encode_png_line`.
+
+## Session Summary — 2026-06-09
 
 | Bug ID | Severity | Class | Status | Notes |
 |--------|----------|-------|--------|-------|
@@ -114,4 +209,9 @@
 | BUG-stb_image_write-003 | Medium | Integer Overflow | Invalid | Could not reproduce; requires >2GB allocation |
 | BUG-stb_image_write-004 | Medium | Missing Input Validation | Patched | Fixed at stb_image_write.h:1474 — added negative dimension check |
 | BUG-stb_image_write-005 | Medium | Undefined Behavior | Patched | Fixed at stb_image_write.h:644 — NaN/Inf guard in stbiw__linear_to_rgbe |
+| BUG-stb_image_write-006 | Medium | Out-of-Bounds Read | Patched | Fixed at stb_image_write.h:495,536 — BMP/TGA comp validation added |
+| BUG-stb_image_write-007 | Medium | Out-of-Bounds Read | Patched | Fixed at stb_image_write.h:763 — HDR comp validation added |
+| BUG-stb_image_write-008 | Medium | NULL Pointer Dereference | Patched | Fixed at stb_image_write.h:767 — cast to size_t + NULL check in HDR scratch alloc |
+| BUG-stb_image_write-009 | High | Out-of-Bounds Read/Write | Patched | Fixed at stb_image_write.h:1140 — added dimension/comp validation in stbi_write_png_to_mem |
+| BUG-stb_image_write-010 | High | Heap Buffer Over-read | Patched | Fixed at stb_image_write.h:1146 — stride validation now rejects negative/insufficient stride |
 
