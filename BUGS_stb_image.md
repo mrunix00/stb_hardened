@@ -599,10 +599,21 @@
   // because stbi__tga_load → ... → stbi__getn is reachable when the
   // non-RLE pixel loop runs after a 0-byte input.
   ```
-- **Status:** Unvalidated
-- **Note:** Reported as UBSAN-only; the fuzzer does not abort on it because
-  the build does not pass `-fno-sanitize-recover=undefined`. A future
-  test will be written to demonstrate the UB deterministically.
+- **Status:** Invalid
+- **Reason:** The UBSAN null-pointer-argument check on `memcpy(src, NULL, 0)` requires
+  either `s->img_buffer` or the destination buffer to actually be NULL at runtime.
+  On this platform (Linux/glibc), `malloc(0)` returns non-NULL (minimum-size
+  allocation), so the TGA non-RLE path with width=0 produces a non-NULL destination
+  (`tga_data`).  The callback-based path refills the internal buffer before the
+  first `stbi__getn` call, so `s->img_buffer` is also non-NULL.  The bug is
+  fundamentally real (passing a NULL pointer to `__nonnull`-declared `memcpy` is UB
+  regardless of size), but cannot be reproduced on platforms where `malloc(0)`
+  returns a distinct non-NULL pointer and where UBSAN does not insert a runtime
+  check that fires merely on potential-NULL provenance.  The fix (guarding `memcpy`
+  with `if (n)`) is still correct and should be applied; a test that aborts
+  deterministically under UBSAN would require a platform where `malloc(0)` returns
+  NULL (BSD/macOS) or a custom allocator interpose.  Test file kept at
+  `tests/bug_stb_image_023.c` for documentation.
 
 ## Session Summary — 2026-05-31
 
