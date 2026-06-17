@@ -170,7 +170,92 @@
 
 ---
 
-## Session Summary — 2026-06-01
+## BUG-stb_c_lexer-008
+
+- **Library:** `stb_c_lexer.h`
+- **Severity:** High
+- **Class:** OOB Read
+- **Location:** `stb_c_lexer.h:477-481`
+- **Source:** Static analysis (manual code audit)
+- **Technique:** static-analysis
+- **Description:**
+  In `stb__clex_parse_string`, when the character before `lexer->eof` is a backslash (`\`), the code unconditionally calls `stb__clex_parse_char(p, &q)`. This function reads `p[1]` unconditionally when `*p == '\\'` (to determine the escape type), but `p` is at `lexer->eof-1`, so `p[1]` reads one byte past the end of the input buffer. Depending on what byte is at `eof`:
+  - If it matches a recognized escape char (e.g. `'n'`, `'t'`, `'0'`, etc.), the function returns successfully with `*q = p+2 = eof+1`. The caller then sets `p = q = eof+1`, causing subsequent iterations to read past the buffer.
+  - If it matches `'x'`, `'X'`, or `'u'` (return -1 cases), `*q = eof+1` persists and the error token carries `end = eof+1`, setting `parse_point = eof+2` for the next call.
+  - Example input that triggers this: `"\"\\` (opening quote + backslash as the last bytes before eof).
+- **Reproduction sketch:**
+  ```c
+  char input[] = "\"\\";  // unterminated string with trailing backslash
+  char store[256];
+  stb_lexer lex;
+  stb_c_lexer_init(&lex, input, input + sizeof(input)-1, store, sizeof(store));
+  // stb_c_lexer_get_token(&lex) reads byte at eof in stb__clex_parse_char's switch
+  ```
+- **Status:** Patched
+- **Fix:** Added `p+1 == lexer->eof` guard before calling `stb__clex_parse_char` in the string-escape branch at `stb_c_lexer.h:479-483`. When the backslash is at the last byte of input, it is treated as a literal character (consistent with how unknown escape sequences are handled), preventing the OOB read in `stb__clex_parse_char`'s `switch(p[1])`.
+
+---
+
+## BUG-stb_c_lexer-009
+
+- **Library:** `stb_c_lexer.h`
+- **Severity:** Medium
+- **Class:** OOB Read
+- **Location:** `stb_c_lexer.h:674`
+- **Source:** Static analysis (manual code audit)
+- **Technique:** static-analysis
+- **Description:**
+  In the char-literal parsing branch, `stb__clex_parse_char(p+1, &p)` is called after confirming `p+1 != lexer->eof` (line 672). However, if `p == lexer->eof-2`, then the argument to `stb__clex_parse_char` is `lexer->eof-1`. If `*(eof-1) == '\\'`, the function reads `p[1] = *(eof)` in its `switch(p[1])` statement — one byte past the buffer. This is the same root cause as BUG-008 but triggered through the char-literal path rather than the string path.
+- **Reproduction sketch:**
+  ```c
+  char input[] = "'\\";  // char literal with trailing backslash
+  char store[16];
+  stb_lexer lex;
+  stb_c_lexer_init(&lex, input, input + sizeof(input)-1, store, sizeof(store));
+  // stb_c_lexer_get_token(&lex) reads byte at eof in stb__clex_parse_char
+  ```
+- **Status:** Patched
+- **Fix:** Added `p+2 == lexer->eof` guard alongside the existing `p+1 == lexer->eof` check at `stb_c_lexer.h:674`. Since we cannot know ahead of time whether the character after `'` is a backslash (which would cause `stb__clex_parse_char` to read `p[1]`), the tighter bound ensures at least 2 bytes are available after the opening quote for the escape sequence.
+
+---
+
+## BUG-stb_c_lexer-010
+
+- **Library:** `stb_c_lexer.h`
+- **Severity:** Medium
+- **Class:** OOB Read
+- **Location:** `stb_c_lexer.h:696, 711, 749, 787`
+- **Source:** Static analysis (manual code audit)
+- **Technique:** static-analysis
+- **Description:**
+  When `STB_C_LEX_USE_STDLIB` is `Y` (the default), the numeric parsing paths use `strtol()` and `strtod()` to parse number tokens. These C standard library functions operate on null-terminated strings and do not accept a length bound. If the input buffer is not null-terminated — which is allowed by the API (the user provides both `input_stream` and `input_stream_end`) — `strtol`/`strtod` will read past `lexer->eof`, scanning past the intended input until they encounter a non-numeric byte or a null terminator in adjacent memory.
+  
+  The non-stdlib parsing paths (`#ifndef STB__CLEX_use_stdlib`) do not have this issue because they use explicit `q != lexer->eof` checks in their parsing loops.
+  
+  Affected call sites:
+  - Line 696: `strtod` for hex float parsing
+  - Line 711: `strtol` for hex integer parsing
+  - Line 749: `strtod` for decimal float parsing
+  - Line 787: `strtol` for decimal integer parsing
+  
+  After the unbounded read, the returned pointer `q` may point past `lexer->eof`. This value is passed to `stb__clex_parse_suffixes` (which with default settings simply passes it through as the token's end pointer), causing `lexer->parse_point` to be set past the buffer for the next token call.
+
+- **Reproduction sketch:**
+  ```c
+  char buf[] = "12345";  // buffer NOT null-terminated; adjacent memory may extend
+  char store[16];
+  stb_lexer lex;
+  // sizeof(buf) includes the implicit null terminator — but if a user constructed
+  // the buffer without one and set input_stream_end explicitly, strtol over-reads.
+  stb_c_lexer_init(&lex, buf, buf + sizeof(buf) - 1, store, sizeof(store));
+  // stb_c_lexer_get_token(&lex) may read past buf+5 via strtol
+  ```
+- **Status:** Patched
+- **Fix:** Changed the default of `STB_C_LEX_USE_STDLIB` from `Y` to `N` at `stb_c_lexer.h:93`. The library's own bounded parser (which checks `q != lexer->eof` in its loops) is now used by default, eliminating the unbounded read at all four call sites. Users who require exact stdlib parsing can opt in by defining `#define STB_C_LEX_USE_STDLIB Y` before including the header, provided their input is null-terminated.
+
+---
+
+## Session Summary — 2026-06-17
 
 | Bug ID | Severity | Class | Status | Notes |
 |--------|----------|-------|--------|-------|
@@ -181,3 +266,6 @@
 | BUG-stb_c_lexer-005 | Low | OOB Read | Patched | Fixed at stb_c_lexer.h:521,529 — added eof guards to comment start detection |
 | BUG-stb_c_lexer-006 | High | OOB Read | Patched | Fixed at stb_c_lexer.h:308 — parse_point no longer advances past eof |
 | BUG-stb_c_lexer-007 | Medium | Incorrect Token Span | Patched | Fixed at stb_c_lexer.h:679 — char literal end no longer over-consumes |
+| BUG-stb_c_lexer-008 | High | OOB Read | Patched | String escape reads past eof when backslash is last byte — fixed at stb_c_lexer.h:479-483 |
+| BUG-stb_c_lexer-009 | Medium | OOB Read | Patched | Char-literal escape reads past eof when escape at eof-2 — fixed at stb_c_lexer.h:674 |
+| BUG-stb_c_lexer-010 | Medium | OOB Read | Patched | strtol/strtod unbounded read — fixed by changing default to bounded parser at stb_c_lexer.h:93 |

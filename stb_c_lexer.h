@@ -90,7 +90,7 @@
 #define STB_C_LEX_INTEGERS_AS_DOUBLES  N  // parses integers as doubles so they can be larger than 'int', but only if STB_C_LEX_STDLIB==N
 #define STB_C_LEX_MULTILINE_DSTRINGS   N  // allow newlines in double-quoted strings
 #define STB_C_LEX_MULTILINE_SSTRINGS   N  // allow newlines in single-quoted strings
-#define STB_C_LEX_USE_STDLIB           Y  // use strtod,strtol for parsing #s; otherwise inaccurate hack
+#define STB_C_LEX_USE_STDLIB           N  // use strtod,strtol for parsing #s; otherwise inaccurate hack
 #define STB_C_LEX_DOLLAR_IDENTIFIER    Y  // allow $ as an identifier character
 #define STB_C_LEX_FLOAT_NO_DECIMAL     Y  // allow floats that have no decimal point if they have an exponent
 
@@ -476,10 +476,14 @@ static int stb__clex_parse_string(stb_lexer *lexer, char *p, int type)
       int n;
       if (*p == '\\') {
          char *q;
-         n = stb__clex_parse_char(p, &q);
-         if (n < 0)
-            return stb__clex_token(lexer, CLEX_parse_error, start, q);
-         p = q;
+         if (p+1 == lexer->eof) {
+            n = (unsigned char) *p++;
+         } else {
+            n = stb__clex_parse_char(p, &q);
+            if (n < 0)
+               return stb__clex_token(lexer, CLEX_parse_error, start, q);
+            p = q;
+         }
       } else {
          // @OPTIMIZE: could speed this up by looping-while-not-backslash
          n = (unsigned char) *p++;
@@ -669,7 +673,7 @@ int stb_c_lexer_get_token(stb_lexer *lexer)
          STB_C_LEX_C_CHARS(
          {
             char *start = p;
-            if (p+1 == lexer->eof)
+            if (p+1 == lexer->eof || p+2 == lexer->eof)
                return stb__clex_token(lexer, CLEX_parse_error, start, p);
             lexer->int_number = stb__clex_parse_char(p+1, &p);
             if (lexer->int_number < 0)
