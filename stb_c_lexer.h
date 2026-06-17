@@ -361,7 +361,7 @@ static double stb__clex_pow(double base, unsigned int exponent)
    return value;
 }
 
-static double stb__clex_parse_float(char *p, char **q)
+static double stb__clex_parse_float(char *p, char **q, char *eof)
 {
    char *s = p;
    double value=0;
@@ -393,7 +393,7 @@ static double stb__clex_parse_float(char *p, char **q)
    if (*p == '.') {
       double pow, addend = 0;
       ++p;
-      for (pow=1; ; pow*=base) {
+      for (pow=1; p != eof; pow*=base) {
          if (*p >= '0' && *p <= '9')
             addend = addend*base + (*p++ - '0');
 #ifdef STB__clex_hex_floats
@@ -410,23 +410,25 @@ static double stb__clex_parse_float(char *p, char **q)
 #ifdef STB__clex_hex_floats
    if (base == 16) {
       // exponent required for hex float literal
-      if (*p != 'p' && *p != 'P') {
+      if (p == eof || (*p != 'p' && *p != 'P')) {
          *q = s;
          return 0;
       }
       exponent = 1;
    } else
 #endif
+   if (p != eof) {
       exponent = (*p == 'e' || *p == 'E');
+   }
 
    if (exponent) {
-      int sign = p[1] == '-';
+      int sign = p+1 != eof && p[1] == '-';
       unsigned int exponent=0;
       double power=1;
       ++p;
-      if (*p == '-' || *p == '+')
+      if (p != eof && (*p == '-' || *p == '+'))
          ++p;
-      while (*p >= '0' && *p <= '9')
+      while (p != eof && *p >= '0' && *p <= '9')
          exponent = exponent*10 + (*p++ - '0');
 
 #ifdef STB__clex_hex_floats
@@ -699,7 +701,7 @@ int stb_c_lexer_get_token(stb_lexer *lexer)
                         #ifdef STB__CLEX_use_stdlib
                         lexer->real_number = strtod((char *) p, (char**) &q);
                         #else
-                        lexer->real_number = stb__clex_parse_float(p, &q);
+                        lexer->real_number = stb__clex_parse_float(p, &q, lexer->eof);
                         #endif
 
                         if (p == q)
@@ -752,7 +754,7 @@ int stb_c_lexer_get_token(stb_lexer *lexer)
                   #ifdef STB__CLEX_use_stdlib
                   lexer->real_number = strtod((char *) p, (char**) &q);
                   #else
-                  lexer->real_number = stb__clex_parse_float(p, &q);
+                  lexer->real_number = stb__clex_parse_float(p, &q, lexer->eof);
                   #endif
 
                   return stb__clex_parse_suffixes(lexer, CLEX_floatlit, p,q, STB_C_LEX_FLOAT_SUFFIXES);

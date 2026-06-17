@@ -255,6 +255,53 @@
 
 ---
 
+## BUG-stb_c_lexer-011
+
+- **Library:** `stb_c_lexer.h`
+- **Severity:** Medium
+- **Class:** OOB Read (Heap Buffer Overflow)
+- **Location:** `stb_c_lexer.h:339`
+- **Source:** libFuzzer crash — input: `1` (single byte), heap-buffer-overflow in `stb__clex_parse_suffixes`
+- **Technique:** fuzzing
+- **Description:**
+When `STB_C_LEX_PARSE_SUFFIXES` is `Y`, the suffix-parsing function `stb__clex_parse_suffixes` enters a `while ((*cur >= 'a' && *cur <= 'z') || (*cur >= 'A' && *cur <= 'Z'))` loop that reads `*cur` without checking whether `cur` has reached `lexer->eof`. If the number being parsed is the last token in the input (so `cur == eof` after parsing the digits), the loop dereferences `lexer->eof` — one byte past the end of the input buffer. With ASan this is caught as a heap-buffer-overflow read of size 1.
+  
+The trigger is any numeric token at the end of the input when suffix parsing (a non-default feature) is enabled.
+- **Reproduction sketch:**
+```c
+char buf[] = "1"; // single digit, no trailing bytes
+stb_lexer lex;
+stb_c_lexer_init(&lex, buf, buf + 1, store, store_len);
+// stb_c_lexer_get_token(&lex) parses "1", calls stb__clex_parse_suffixes with cur == eof
+// stb__clex_parse_suffixes reads *cur == *eof -> OOB
+```
+- **Status:** Unvalidated
+
+---
+
+## BUG-stb_c_lexer-012
+
+- **Library:** `stb_c_lexer.h`
+- **Severity:** High
+- **Class:** OOB Read (Heap Buffer Overflow)
+- **Location:** `stb_c_lexer.h:393-408` (specifically line 397)
+- **Source:** libFuzzer crash — input: `8.` (digit followed by decimal point at end), heap-buffer-overflow in `stb__clex_parse_float`
+- **Technique:** fuzzing
+- **Description:**
+In `stb__clex_parse_float`, after matching a decimal point (`'.'`), the code unconditionally enters `for (pow=1; ; pow*=base)` and reads `*p` on the first iteration without checking whether `p` points past `lexer->eof`. When the decimal point is the last character in the input (e.g. `8.` at end of buffer), `p` becomes `eof` after the `++p` past the `'.'`, and the loop dereferences `*eof` — one byte past the end.
+  
+This is reachable in the default configuration with inputs like a number immediately followed by a trailing decimal point with nothing after it.
+- **Reproduction sketch:**
+```c
+char buf[] = "8.";  // digit + dot, no trailing bytes
+stb_lexer lex;
+stb_c_lexer_init(&lex, buf, buf + 2, store, store_len);
+// stb_c_lexer_get_token(&lex) parses this as a decimal float
+// stb__clex_parse_float reads *eof in the fraction-digit for loop
+```
+- **Status:** Patched
+- **Fix:** Added eof guard to `stb__clex_parse_float` at `stb_c_lexer.h:396` — the fractional-digit for-loop and exponent-read now check `p != eof` before dereferencing. Also added eof parameter to the function signature and guarded the exponent-digit while loop at `stb_c_lexer.h:428`.
+
 ## Session Summary — 2026-06-17
 
 | Bug ID | Severity | Class | Status | Notes |
