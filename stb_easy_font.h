@@ -200,6 +200,8 @@ static int stb_easy_font_print(float x, float y, char *text, unsigned char color
 {
     char *vbuf = (char *) vertex_buffer;
     float start_x = x;
+    if (vbuf == NULL) return 0;
+    if (text == NULL) return 0;
     int offset = 0;
 
     stb_easy_font_color c = { 255,255,255,255 }; // use structure copying to avoid needing depending on memcpy()
@@ -231,6 +233,7 @@ static int stb_easy_font_width(char *text)
 {
     float len = 0;
     float max_len = 0;
+    if (text == NULL) return 0;
     while (*text) {
         if (*text == '\n') {
             if (len > max_len) max_len = len;
@@ -249,6 +252,7 @@ static int stb_easy_font_height(char *text)
 {
     float y = 0;
     int nonempty_line=0;
+    if (text == NULL) return 0;
     while (*text) {
         if (*text == '\n') {
             y += 12;
