@@ -61,7 +61,7 @@
   // Provide a PSD with dimensions that make 4 * w * h overflow 32-bit int.
   ```
 - **Status:** Invalid
-- **Reason:** Already protected by stbi__mad3sizes_valid check earlier in the function.
+- **Reason:** Already protected by stbi\_\_mad3sizes_valid check earlier in the function.
 
 ## BUG-stb_image-004
 
@@ -81,7 +81,7 @@
   // Provide a GIF with dimensions such that 4 * width * height overflows.
   ```
 - **Status:** Invalid
-- **Reason:** Already protected by stbi__mad3sizes_valid check earlier in the function.
+- **Reason:** Already protected by stbi\_\_mad3sizes_valid check earlier in the function.
 
 ## BUG-stb_image-005
 
@@ -230,11 +230,11 @@
   of `*z` (uninitialized) determines whether the loop body is entered, making the
   crash dependent on stack state.
 - **Reproduction sketch:**
-   ```c
-   stbi_set_flip_vertically_on_load(1);
-   // Provide a non-GIF file (fails the stbi__gif_test check).
-   // The result is NULL, *z is uninitialized, and the flip is attempted.
-   ```
+  ```c
+  stbi_set_flip_vertically_on_load(1);
+  // Provide a non-GIF file (fails the stbi__gif_test check).
+  // The result is NULL, *z is uninitialized, and the flip is attempted.
+  ```
 - **Status:** Patched
 - **Fix:** Added `result &&` guard before `stbi__vertically_flip_on_load` check at
   stb_image.h:1451. When `stbi__load_gif_main` returns NULL the flip is skipped,
@@ -326,7 +326,7 @@
   allocated on the caller's stack at lines 5137-5141. Only `pal_len` entries are initialized
   from the PLTE chunk (at most 256, but possibly fewer). The `STBI_NOTUSED(len)` at line 4988
   explicitly discards the palette length. Pixel values can range 0-255 regardless of palette
-  size. For any pixel index >= pal_len*4, the code reads uninitialized stack memory, producing
+  size. For any pixel index >= pal_len\*4, the code reads uninitialized stack memory, producing
   output pixels that contain leaked stack data.
 - **Reproduction sketch:**
   ```c
@@ -495,6 +495,7 @@
 
   Net effect: a few dozen bytes of attacker-controlled input can pin a CPU core for
   multiple seconds. No memory corruption, but a clear DoS.
+
 - **Reproduction sketch:**
   ```c
   // 18-byte TGA-like input; mode byte for fuzzer, then:
@@ -522,17 +523,19 @@
 - **Technique:** fuzzing
 - **Description:**
   In `stbi__gif_load_next`, the first-frame buffers are allocated as:
+
   ```c
   g->out       = (stbi_uc *) stbi__malloc(4 * pcount);
   g->background = (stbi_uc *) stbi__malloc(4 * pcount);
   g->history   = (stbi_uc *) stbi__malloc(pcount);
   ```
+
   where `pcount = g->w * g->h`. The only pre-allocation check is
   `stbi__mad3sizes_valid(4, g->w, g->h, 0)`, which guards against signed integer
   overflow, not against the resulting allocation being unreasonably large.
 
   `g->w` and `g->h` are validated against `STBI_MAX_DIMENSIONS` (1<<24) individually
-  by `stbi__gif_header`, so each can be up to 16,777,216. The *product* `g->w * g->h`
+  by `stbi__gif_header`, so each can be up to 16,777,216. The _product_ `g->w * g->h`
   is unconstrained and may be 200M-700M, producing `4 * pcount` of 800MB-2.8GB.
 
   A 44-byte GIF89a input with `width=0x4900` (18688) and `height=0x3846` (14406)
@@ -543,6 +546,7 @@
   the system OOM killer.
 
   No memory corruption, but the attack surface is a tiny input → GB-scale allocation.
+
 - **Reproduction sketch:**
   ```c
   // Mode byte 0x00 (8-bit load, req_comp=0) followed by a GIF89a with
@@ -589,8 +593,9 @@
   This is recoverable UBSAN (the fuzzer does not abort), and the code in
   practice performs no actual memory access. However, it is a real,
   reproducible UB violation triggered by legitimate input shapes (TGA with
-  small bpp, GIF with declared max-dim count * 0 cases, etc.). The fix is a
+  small bpp, GIF with declared max-dim count \* 0 cases, etc.). The fix is a
   one-line guard `if (n)` to skip the call when the size is zero.
+
 - **Reproduction sketch:**
   ```c
   // Build with -fsanitize=address,undefined -fno-sanitize-recover=undefined
@@ -604,45 +609,45 @@
   either `s->img_buffer` or the destination buffer to actually be NULL at runtime.
   On this platform (Linux/glibc), `malloc(0)` returns non-NULL (minimum-size
   allocation), so the TGA non-RLE path with width=0 produces a non-NULL destination
-  (`tga_data`).  The callback-based path refills the internal buffer before the
-  first `stbi__getn` call, so `s->img_buffer` is also non-NULL.  The bug is
+  (`tga_data`). The callback-based path refills the internal buffer before the
+  first `stbi__getn` call, so `s->img_buffer` is also non-NULL. The bug is
   fundamentally real (passing a NULL pointer to `__nonnull`-declared `memcpy` is UB
   regardless of size), but cannot be reproduced on platforms where `malloc(0)`
   returns a distinct non-NULL pointer and where UBSAN does not insert a runtime
-  check that fires merely on potential-NULL provenance.  The fix (guarding `memcpy`
+  check that fires merely on potential-NULL provenance. The fix (guarding `memcpy`
   with `if (n)`) is still correct and should be applied; a test that aborts
   deterministically under UBSAN would require a platform where `malloc(0)` returns
-  NULL (BSD/macOS) or a custom allocator interpose.  Test file kept at
+  NULL (BSD/macOS) or a custom allocator interpose. Test file kept at
   `tests/bug_stb_image_023.c` for documentation.
 
 ## Session Summary — 2026-05-31
 
-| Bug ID | Severity | Class | Status | Notes |
-|--------|----------|-------|--------|-------|
-| BUG-stb_image-001 | High | Integer Overflow | Patched | Fixed at stb_image.h:6994-7023 |
-| BUG-stb_image-002 | Medium | Stack Overflow | Patched | Fixed at stb_image.h:6575, 6662-6667 |
-| BUG-stb_image-003 | High | Integer Overflow | Invalid | Already protected by stbi__mad3sizes_valid |
-| BUG-stb_image-004 | High | Integer Overflow | Invalid | Already protected by stbi__mad3sizes_valid |
-| BUG-stb_image-005 | High | OOB Read / Heap Buffer Overflow | Patched | Fixed at stb_image.h:7032 |
-| BUG-stb_image-006 | High | Heap Buffer Overflow (OOB R/W) | Patched | Fixed at stb_image.h:1452 |
-| BUG-stb_image-007 | Medium | Use of Uninitialized Data | Patched | Fixed at stb_image.h:5937, 7236 |
-| BUG-stb_image-008 | High | Double-Free | Patched | Fixed at stb_image.h:6998 |
-| BUG-stb_image-009 | Medium | NULL Pointer Dereference | Patched | Fixed at stb_image.h:6536 |
-| BUG-stb_image-010 | Medium | NULL Ptr Deref / Uninit Var | Patched | Fixed at stb_image.h:1451 |
-| BUG-stb_image-011 | Medium | Integer Overflow -> Heap BOF | Patched | Fixed at stb_image.h:1820 |
-| BUG-stb_image-012 | High | Integer Overflow -> Heap Buffer Overflow | Invalid | Not reproducible on 64-bit (requires 32-bit) |
-| BUG-stb_image-013 | High | Integer Overflow -> Heap Buffer Overflow | Invalid | Not reproducible on 64-bit (requires 32-bit) |
-| BUG-stb_image-014 | Medium | Out-of-bounds Read / Information Disclosure | Patched | Fixed at stb_image.h:4969,4977 |
-| BUG-stb_image-015 | Low | Logic Error / Spec Violation | Patched | Fixed at stb_image.h:5112 |
-| BUG-stb_image-016 | High | Integer Overflow -> Heap Buffer Overflow | Invalid | Not reproducible on Linux (glibc realloc frees) |
-| BUG-stb_image-017 | Medium | Logic Error | Patched | Fixed at stb_image.h:3440 |
-| BUG-stb_image-018 | Medium | Use of Uninitialized Memory (Info Leak) | Patched | Fixed at stb_image.h:3349 |
-| BUG-stb_image-019 | Medium | Out-of-bounds Read / Information Disclosure | Patched | Fixed at stb_image.h:5617,5638,5645 |
-| BUG-stb_image-020 | Medium | Integer Overflow | Invalid | Neutered by BUG-001 stride overflow fix |
-| BUG-stb_image-021 | Medium | DoS (Slow RLE Loop) | Patched | Fixed at stb_image.h:5985 — EOF break in TGA RLE loop |
-| BUG-stb_image-022 | High | DoS (Excessive Allocation) | Patched | Fixed at stb_image.h:6802 — total-pixel bound in GIF load_next |
-| BUG-stb_image-023 | Low | Undefined Behavior | Unvalidated | UBSAN: `stbi__getn` calls `memcpy` with n=0 / possibly-NULL |
-| BUG-stb_image-024 | High | DoS (Excessive Allocation + Slow Post-Process) | Patched | Fixed at stb_image.h:5904 — total-pixel bound in TGA loader |
+| Bug ID            | Severity | Class                                          | Status  | Notes                                                                    |
+| ----------------- | -------- | ---------------------------------------------- | ------- | ------------------------------------------------------------------------ |
+| BUG-stb_image-001 | High     | Integer Overflow                               | Patched | Fixed at stb_image.h:6994-7023                                           |
+| BUG-stb_image-002 | Medium   | Stack Overflow                                 | Patched | Fixed at stb_image.h:6575, 6662-6667                                     |
+| BUG-stb_image-003 | High     | Integer Overflow                               | Invalid | Already protected by stbi\_\_mad3sizes_valid                             |
+| BUG-stb_image-004 | High     | Integer Overflow                               | Invalid | Already protected by stbi\_\_mad3sizes_valid                             |
+| BUG-stb_image-005 | High     | OOB Read / Heap Buffer Overflow                | Patched | Fixed at stb_image.h:7032                                                |
+| BUG-stb_image-006 | High     | Heap Buffer Overflow (OOB R/W)                 | Patched | Fixed at stb_image.h:1452                                                |
+| BUG-stb_image-007 | Medium   | Use of Uninitialized Data                      | Patched | Fixed at stb_image.h:5937, 7236                                          |
+| BUG-stb_image-008 | High     | Double-Free                                    | Patched | Fixed at stb_image.h:6998                                                |
+| BUG-stb_image-009 | Medium   | NULL Pointer Dereference                       | Patched | Fixed at stb_image.h:6536                                                |
+| BUG-stb_image-010 | Medium   | NULL Ptr Deref / Uninit Var                    | Patched | Fixed at stb_image.h:1451                                                |
+| BUG-stb_image-011 | Medium   | Integer Overflow -> Heap BOF                   | Patched | Fixed at stb_image.h:1820                                                |
+| BUG-stb_image-012 | High     | Integer Overflow -> Heap Buffer Overflow       | Invalid | Not reproducible on 64-bit (requires 32-bit)                             |
+| BUG-stb_image-013 | High     | Integer Overflow -> Heap Buffer Overflow       | Invalid | Not reproducible on 64-bit (requires 32-bit)                             |
+| BUG-stb_image-014 | Medium   | Out-of-bounds Read / Information Disclosure    | Patched | Fixed at stb_image.h:4969,4977                                           |
+| BUG-stb_image-015 | Low      | Logic Error / Spec Violation                   | Patched | Fixed at stb_image.h:5112                                                |
+| BUG-stb_image-016 | High     | Integer Overflow -> Heap Buffer Overflow       | Invalid | Not reproducible on Linux (glibc realloc frees)                          |
+| BUG-stb_image-017 | Medium   | Logic Error                                    | Patched | Fixed at stb_image.h:3440                                                |
+| BUG-stb_image-018 | Medium   | Use of Uninitialized Memory (Info Leak)        | Patched | Fixed at stb_image.h:3349                                                |
+| BUG-stb_image-019 | Medium   | Out-of-bounds Read / Information Disclosure    | Patched | Fixed at stb_image.h:5617,5638,5645                                      |
+| BUG-stb_image-020 | Medium   | Integer Overflow                               | Invalid | Neutered by BUG-001 stride overflow fix                                  |
+| BUG-stb_image-021 | Medium   | DoS (Slow RLE Loop)                            | Patched | Fixed at stb_image.h:5985 — EOF break in TGA RLE loop                    |
+| BUG-stb_image-022 | High     | DoS (Excessive Allocation)                     | Patched | Fixed at stb_image.h:6802 — total-pixel bound in GIF load_next           |
+| BUG-stb_image-023 | Low      | Undefined Behavior                             | Invalid | memcpy with NULL+0 not reproducible on glibc; malloc(0) returns non-NULL |
+| BUG-stb_image-024 | High     | DoS (Excessive Allocation + Slow Post-Process) | Patched | Fixed at stb_image.h:5904 — total-pixel bound in TGA loader              |
 
 ## BUG-stb_image-024
 
@@ -667,8 +672,9 @@
   process to run for many seconds, exhausting CPU and memory.
 
   This is a duplicate-flavor of the BUG-022 GIF issue: the per-axis bound
-  is insufficient when a malicious image has *moderate* width and height
+  is insufficient when a malicious image has _moderate_ width and height
   but their product is still enormous.
+
 - **Reproduction sketch:**
   ```c
   unsigned char tga[] = {
@@ -692,7 +698,7 @@
   require ~48MB, well within reasonable use. The validation test
   (`tests/bug_stb_image_024.c`) now reports `reason="too large"` and
   returns `NULL` immediately on the same 33-byte input.
-| BUG-stb_image-024 | High | DoS (Excessive Allocation + Slow Post-Process) | Patched | Fixed at stb_image.h:5904 — total-pixel bound in TGA loader |
+  | BUG-stb_image-024 | High | DoS (Excessive Allocation + Slow Post-Process) | Patched | Fixed at stb_image.h:5904 — total-pixel bound in TGA loader |
 
 ## BUG-stb_image-025
 
@@ -719,6 +725,7 @@
 - **Technique:** static-analysis
 - **Description:**
   In `stbi__bmp_load`, the palette count `psize` is computed as:
+
   ```c
   if (info.hsz == 12) {
      if (info.bpp < 24)
@@ -728,6 +735,7 @@
         psize = (info.offset - info.extra_read - info.hsz) >> 2;
   }
   ```
+
   where `info.offset` is a signed `int` from the BMP file header. When `offset` is smaller than `extra_read + hsz`, the subtraction yields a negative `psize`.
 
   The guard at line 5566 (`if (psize == 0)`) only catches zero, and the guard at line 5603 (`if (psize == 0 || psize > 256)`) does not catch negative values because an `int` comparison `-14 > 256` is false. With a negative `psize`, the palette-read loop `for (i=0; i < psize; ++i)` is skipped, leaving the stack-allocated `pal[256][4]` completely uninitialized.
@@ -761,38 +769,177 @@
   };
    stbi_load_from_memory(bmp, sizeof(bmp), &x, &y, &c, 0);
    // Output pixels will contain uninitialized stack data for color values.
-   ```
+  ```
 - **Status:** Patched
 - **Fix:** Changed `psize == 0` to `psize <= 0` at stb_image.h:5603. When `info.offset` is smaller than `extra_read + hsz`, `psize` becomes negative, which previously bypassed both validation checks (`psize == 0` and `psize > 256`). The negative psize allowed the palette-read loop to be skipped while leaving `pal[256][4]` on the stack uninitialized. The `<=` check catches negative values in addition to zero, causing the decoder to reject the malformed BMP with "invalid" instead of reading from uninitialized stack memory.
 
 ## Session Summary — 2026-06-09
 
-| Bug ID | Severity | Class | Status | Notes |
-|--------|----------|-------|--------|-------|
-| BUG-stb_image-001 | High | Integer Overflow | Patched | GIF stride overflow |
-| BUG-stb_image-002 | Medium | Stack Overflow | Patched | GIF LZW recursion depth |
-| BUG-stb_image-003 | High | Integer Overflow | Invalid | PSD already protected |
-| BUG-stb_image-004 | High | Integer Overflow | Invalid | GIF already protected |
-| BUG-stb_image-005 | High | OOB Read / Heap BOF | Patched | GIF two_back pointer fix |
-| BUG-stb_image-006 | High | Heap BOF | Patched | GIF vertical flip bytes_per_pixel |
-| BUG-stb_image-007 | Medium | Uninitialized Data | Patched | TGA/HDR getn return check |
-| BUG-stb_image-008 | High | Double-Free | Patched | GIF zero-stride guard |
-| BUG-stb_image-009 | Medium | NULL Deref | Patched | PIC convert_format guard |
-| BUG-stb_image-010 | Medium | NULL Deref | Patched | GIF flip guard |
-| BUG-stb_image-011 | Medium | Integer Overflow | Patched | convert_format16 mad4 |
-| BUG-stb_image-012 | High | Integer Overflow | Invalid | 32-bit only, not exploitable on 64-bit |
-| BUG-stb_image-013 | High | Integer Overflow | Invalid | 32-bit only, not exploitable on 64-bit |
-| BUG-stb_image-014 | Medium | OOB Read | Patched | PNG palette bounds clamp |
-| BUG-stb_image-015 | Low | Logic Error | Patched | PNG IHDR depth validation |
-| BUG-stb_image-016 | High | Integer Overflow | Invalid | glibc realloc frees, not exploitable |
-| BUG-stb_image-017 | Medium | Logic Error | Patched | JPEG marker error propagation |
-| BUG-stb_image-018 | Medium | Uninitialized Memory | Patched | JPEG coeff buffer memset |
-| BUG-stb_image-019 | Medium | OOB Read | Patched | BMP palette bounds clamp |
-| BUG-stb_image-020 | Medium | Integer Overflow | Invalid | Neutered by BUG-001 |
-| BUG-stb_image-021 | Medium | DoS (Slow Loop) | Patched | TGA RLE EOF break |
-| BUG-stb_image-022 | High | DoS (Excessive Alloc) | Patched | GIF total-pixel bound |
-| BUG-stb_image-023 | Low | Undefined Behavior | Unvalidated | stbi__getn memcpy with n=0 |
-| BUG-stb_image-024 | High | DoS (Excessive Alloc) | Patched | TGA total-pixel bound |
-| BUG-stb_image-025 | Medium | Integer Conversion | Patched | PNG chunk length INT_MAX guard |
-| BUG-stb_image-026 | Medium | OOB Read / Stack Leak | Patched | BMP negative psize → uninitialized palette, fixed at stb_image.h:5603 |
+| Bug ID            | Severity | Class                              | Status  | Notes                                                                 |
+| ----------------- | -------- | ---------------------------------- | ------- | --------------------------------------------------------------------- |
+| BUG-stb_image-001 | High     | Integer Overflow                   | Patched | GIF stride overflow                                                   |
+| BUG-stb_image-002 | Medium   | Stack Overflow                     | Patched | GIF LZW recursion depth                                               |
+| BUG-stb_image-003 | High     | Integer Overflow                   | Invalid | PSD already protected                                                 |
+| BUG-stb_image-004 | High     | Integer Overflow                   | Invalid | GIF already protected                                                 |
+| BUG-stb_image-005 | High     | OOB Read / Heap BOF                | Patched | GIF two_back pointer fix                                              |
+| BUG-stb_image-006 | High     | Heap BOF                           | Patched | GIF vertical flip bytes_per_pixel                                     |
+| BUG-stb_image-007 | Medium   | Uninitialized Data                 | Patched | TGA/HDR getn return check                                             |
+| BUG-stb_image-008 | High     | Double-Free                        | Patched | GIF zero-stride guard                                                 |
+| BUG-stb_image-009 | Medium   | NULL Deref                         | Patched | PIC convert_format guard                                              |
+| BUG-stb_image-010 | Medium   | NULL Deref                         | Patched | GIF flip guard                                                        |
+| BUG-stb_image-011 | Medium   | Integer Overflow                   | Patched | convert_format16 mad4                                                 |
+| BUG-stb_image-012 | High     | Integer Overflow                   | Invalid | 32-bit only, not exploitable on 64-bit                                |
+| BUG-stb_image-013 | High     | Integer Overflow                   | Invalid | 32-bit only, not exploitable on 64-bit                                |
+| BUG-stb_image-014 | Medium   | OOB Read                           | Patched | PNG palette bounds clamp                                              |
+| BUG-stb_image-015 | Low      | Logic Error                        | Patched | PNG IHDR depth validation                                             |
+| BUG-stb_image-016 | High     | Integer Overflow                   | Invalid | glibc realloc frees, not exploitable                                  |
+| BUG-stb_image-017 | Medium   | Logic Error                        | Patched | JPEG marker error propagation                                         |
+| BUG-stb_image-018 | Medium   | Uninitialized Memory               | Patched | JPEG coeff buffer memset                                              |
+| BUG-stb_image-019 | Medium   | OOB Read                           | Patched | BMP palette bounds clamp                                              |
+| BUG-stb_image-020 | Medium   | Integer Overflow                   | Invalid | Neutered by BUG-001                                                   |
+| BUG-stb_image-021 | Medium   | DoS (Slow Loop)                    | Patched | TGA RLE EOF break                                                     |
+| BUG-stb_image-022 | High     | DoS (Excessive Alloc)              | Patched | GIF total-pixel bound                                                 |
+| BUG-stb_image-023 | Low      | Undefined Behavior                 | Invalid | stbi\_\_getn memcpy with n=0                                          |
+| BUG-stb_image-024 | High     | DoS (Excessive Alloc)              | Patched | TGA total-pixel bound                                                 |
+| BUG-stb_image-025 | Medium   | Integer Conversion                 | Patched | PNG chunk length INT_MAX guard                                        |
+| BUG-stb_image-026 | Medium   | OOB Read / Stack Leak              | Patched | BMP negative psize → uninitialized palette, fixed at stb_image.h:5603 |
+| BUG-stb_image-027 | High     | Buffer Over-Read via Negative Size | Patched | Added n<0 guard in stbi\_\_getn at stb_image.h:1668                   |
+| BUG-stb_image-028 | Medium   | DoS (Infinite Loop)                | Invalid | PIC RLE count=0 bounded by input size (5B/iter); not amplified        |
+| BUG-stb_image-029 | Medium   | DoS (Infinite Loop)                | Patched | Negative io.read treated as EOF at stb_image.h:1601                   |
+| BUG-stb_image-030 | Medium   | NULL Pointer Dereference           | Invalid | Not exploitable; img_buffer == img_buffer_end prevents deref          |
 
+## BUG-stb_image-027
+
+- **Library:** `stb_image.h`
+- **Severity:** High
+- **Class:** Buffer Over-Read (via Negative Size)
+- **Location:** `stb_image.h:1666-1688`
+- **Source:** https://github.com/Mintsuki/stbi-hardened (FIXES.md — I/O and context section)
+- **Technique:** web-search
+- **Description:**
+  The `stbi__getn` function accepts `int n` as its size parameter. If `n` is negative
+  (e.g., due to an integer overflow in a caller's size computation), the function
+  proceeds to the fast path at line 1682-1683 where `memcpy(buffer, s->img_buffer, n)`
+  is called. Since `n` is implicitly cast to `size_t` (unsigned), a negative int
+  becomes a huge positive value (e.g., `(size_t)-1` = `0xFFFFFFFF` on 32-bit,
+  `0xFFFFFFFFFFFFFFFF` on 64-bit). This causes `memcpy` to read far past the end of
+  `s->img_buffer`, potentially crashing or disclosing heap memory.
+
+  The negative-n check at line 1647 in `stbi__skip` (`if (n < 0)`) shows the
+  developers were aware of the need to guard against negative sizes in other
+  functions, but `stbi__getn` was missed.
+
+- **Reproduction sketch:**
+  ```c
+  // A PNM (PPM/PGM/PBM) file with dimensions such that
+  // img_n * img_x * img_y * (bits_per_channel/8) overflows int to negative.
+  // This negative passes to stbi__getn, which then calls memcpy with a
+  // huge size_t, causing a buffer over-read.
+  ```
+- **Fix:** Added `if (n < 0) return 0;` guard at the top of `stbi__getn`, matching the convention already used in `stbi__skip` (line 1647). Changed `stb_image.h:1668`.
+- **Status:** Patched
+
+## BUG-stb_image-028
+
+- **Library:** `stb_image.h`
+- **Severity:** Medium
+- **Class:** Denial of Service (Infinite/Slow Loop)
+- **Location:** `stb_image.h:6447-6466`
+- **Source:** https://github.com/Mintsuki/stbi-hardened (FIXES.md — PIC section)
+- **Technique:** web-search
+- **Description:**
+  In `stbi__pic_load_core`, the Pure RLE decoder (case 1, line 6447) reads a
+  `count` byte from the input. If `count` is 0, the `left -= count` operation
+  does nothing (`left` stays unchanged), so the while loop `while (left>0)`
+  never exits. The only escape is `stbi__at_eof`. On each iteration, the code
+  reads 1 byte (count) + 4 bytes (value) from the input. If the input is
+  artificially padded with zeros, this loop can spin for many iterations
+  without making output progress (the inner `for(i=0; i<count; ++i)` does
+  nothing when count=0). This creates a slow-loop / resource-exhaustion DoS
+  vector.
+- **Reproduction sketch:**
+  ```c
+  // A PIC file with Pure RLE packets where count=0 bytes are interleaved,
+  // causing the decoder to loop without forward progress.
+  ```
+- **Status:** Invalid
+- **Validation findings:** Each count==0 iteration consumes 5 bytes of input (1 count + 4 value). The loop is bounded by input_size/5 iterations, proportional to input size — no amplification. The `stbi__at_eof` check (line 6456) ensures termination when input is exhausted. A 100KB input file produces at most 20K iterations. No crash, no meaningful DoS.
+
+## BUG-stb_image-029
+
+- **Library:** `stb_image.h`
+- **Severity:** Medium
+- **Class:** DoS (Infinite Loop)
+- **Location:** `stb_image.h:1597-1612`
+- **Source:** https://github.com/Mintsuki/stbi-hardened (FIXES.md — I/O and context section)
+- **Technique:** web-search
+- **Description:**
+  In `stbi__refill_buffer`, the return value `n` from `io.read` (line 1599)
+  is used directly without validation. If `io.read` returns a negative value
+  (indicating an error), the computation at line 1610
+  `s->img_buffer_end = s->buffer_start + n` sets `img_buffer_end` before
+  `img_buffer_start`. After this, every call to `stbi__get8` sees
+  `img_buffer >= img_buffer_end` (because end is before start), which triggers
+  another `stbi__refill_buffer`, which again sets
+  `img_buffer_end = buffer_start + (-1)`, followed by `get8` reading one byte
+  from `buffer_start`. On the next `get8` the condition is again true, calling
+  `refill_buffer` again — an infinite loop.
+
+  _Validated:_ With a callback that always returns -1, the decoder calls
+  `io.read` over 46 million times in 15 seconds without making progress,
+  consuming 100% CPU — a classic Denial of Service.
+
+- **Reproduction sketch:**
+  ```c
+  // Use a custom io.read callback that returns -1 on error, then
+  // call stbi_load_from_callbacks. The decoder will spin forever.
+  ```
+- **Status:** Patched
+- **Fix:** Changed `if (n == 0)` to `if (n <= 0)` at `stb_image.h:1601`. Negative io.read returns are now treated as EOF, breaking the refill → get8 → refill infinite loop.
+
+## BUG-stb_image-030
+
+- **Library:** `stb_image.h`
+- **Severity:** Medium
+- **Class:** NULL Pointer Dereference
+- **Location:** `stb_image.h:826-833`
+- **Source:** https://github.com/Mintsuki/stbi-hardened (FIXES.md — Public API entry points section)
+- **Technique:** web-search
+- **Description:**
+  `stbi__start_mem` receives a `buffer` pointer and `len` but performs no
+  validation. If `buffer` is NULL or `len` is non-positive, the function
+  assigns NULL to `img_buffer` (line 831) and `buffer+len` to `img_buffer_end`
+  (line 832).
+
+  _Testing found:_ The NULL buffer case does NOT cause an immediate crash
+  because `img_buffer == img_buffer_end`, so the `img_buffer < img_buffer_end`
+  comparison in `stbi__get8` is false (equal), preventing the dereference.
+  The decoder reads 0s from the EOF fallback and returns NULL gracefully.
+
+  The negative `len` case creates a pointer before the start of the array
+  (`buffer + (-1)`), which is technically UB but similarly does not
+  manifest as a crash because the `img_buffer < img_buffer_end` check is
+  immediately false.
+
+  While the fix is harmless defense-in-depth, the vulnerability as
+  originally described does not manifest with ASan/UBSan. All public API
+  entry points tested return NULL gracefully.
+
+- **Reproduction sketch:**
+  ```c
+  stbi_load_from_memory(NULL, 0, &x, &y, &c, 0);
+  // Returns NULL gracefully (no crash). img_buffer == img_buffer_end,
+  // so stbi__get8 returns 0 via the EOF fallback path.
+  ```
+- **Status:** Invalid
+
+## Session Summary — 2026-06-17
+
+| Bug ID            | Severity | Class                              | Status  | Notes                                                   |
+| ----------------- | -------- | ---------------------------------- | ------- | ------------------------------------------------------- |
+| BUG-stb_image-027 | High     | Buffer Over-Read via Negative Size | Patched | Added n<0 guard in stbi\_\_getn at stb_image.h:1668     |
+| BUG-stb_image-028 | Medium   | DoS (Infinite Loop)                | Invalid | PIC RLE count=0 bounded by input size; no amplification |
+| BUG-stb_image-029 | Medium   | DoS (Infinite Loop)                | Patched | Negative io.read treated as EOF at stb_image.h:1601     |
+| BUG-stb_image-030 | Medium   | NULL Pointer Dereference           | Invalid | img_buffer == img_buffer_end prevents deref             |
+
+|

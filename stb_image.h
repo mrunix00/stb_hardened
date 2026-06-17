@@ -1598,7 +1598,7 @@ static void stbi__refill_buffer(stbi__context *s)
 {
    int n = (s->io.read)(s->io_user_data,(char*)s->buffer_start,s->buflen);
    s->callback_already_read += (int) (s->img_buffer - s->img_buffer_original);
-   if (n == 0) {
+   if (n <= 0) {
       // at end of file, treat same as if from memory, but need to handle case
       // where s->img_buffer isn't pointing to safe memory, e.g. 0-byte file
       s->read_from_callbacks = 0;
@@ -1665,6 +1665,7 @@ static void stbi__skip(stbi__context *s, int n)
 #else
 static int stbi__getn(stbi__context *s, stbi_uc *buffer, int n)
 {
+   if (n < 0) return 0;
    if (s->io.read) {
       int blen = (int) (s->img_buffer_end - s->img_buffer);
       if (blen < n) {
