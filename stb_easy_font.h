@@ -108,6 +108,7 @@ void print_string(float x, float y, char *text, float r, float g, float b)
 
 #include <stdlib.h>
 #include <math.h>
+#include <string.h>
 
 static struct stb_easy_font_info_struct {
     unsigned char advance;
@@ -179,10 +180,13 @@ static int stb_easy_font_draw_segs(float x, float y, unsigned char *segs, int nu
         if (len && offset <= vbuf_size - 64) {
             float y0 = y + (float) (segs[i]>>4);
             for (j=0; j < 4; ++j) {
-                * (float *) (vbuf+offset+0) = x  + (j==1 || j==2 ? (vertical ? 1 : len) : 0);
-                * (float *) (vbuf+offset+4) = y0 + (    j >= 2   ? (vertical ? len : 1) : 0);
-                * (float *) (vbuf+offset+8) = 0.f;
-                * (stb_easy_font_color *) (vbuf+offset+12) = c;
+                float f0 = x  + (j==1 || j==2 ? (vertical ? 1 : len) : 0);
+                float f1 = y0 + (    j >= 2   ? (vertical ? len : 1) : 0);
+                float f2 = 0.f;
+                memcpy(vbuf+offset+0, &f0, sizeof(float));
+                memcpy(vbuf+offset+4, &f1, sizeof(float));
+                memcpy(vbuf+offset+8, &f2, sizeof(float));
+                memcpy(vbuf+offset+12, &c, sizeof(stb_easy_font_color));
                 offset += 16;
             }
         }

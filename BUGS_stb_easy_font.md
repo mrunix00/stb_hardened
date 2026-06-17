@@ -109,6 +109,42 @@
 - **Status:** Patched
 - **Fix:** Added `if (text == NULL) return 0;` guard at the start of all three public functions (`stb_easy_font_print`, `stb_easy_font_width`, `stb_easy_font_height`) to return 0 gracefully when called with a NULL string pointer, preventing the null-pointer load in the `while (*text)` loop condition.
 
+## BUG-stb_easy_font-005
+
+- **Library:** stb_easy_font.h
+- **Severity:** Low
+- **Class:** Undefined Behavior (Misaligned Pointer / Strict Aliasing)
+- **Location:** stb_easy_font.h:182-185
+- **Source:** libFuzzer + UBSan crash at stb_easy_font_fuzzer.c:80
+- **Technique:** fuzzing
+- **Description:**
+  In `stb_easy_font_draw_segs`, the vertex buffer pointer (`vbuf`) is obtained by
+  casting a user-supplied `void *vertex_buffer` to `char *`. The function then writes
+  `float` and `stb_easy_font_color` values through casts to `(float *)` and
+  `(stb_easy_font_color *)` at offsets within that buffer. If the user-supplied buffer
+  is not aligned to a 4-byte boundary, these stores constitute misaligned access, which
+  is undefined behavior in C. On x86 this works (slowly) in practice, but on ARM it
+  causes a SIGBUS / alignment fault, making the library non-portable. Additionally,
+  the `char *`-to-`float *` cast violates strict aliasing rules, which the compiler may
+  exploit for miscompilation under `-fstrict-aliasing`.
+  The misalignment occurs when `vertex_buffer` is an odd address — e.g. a `char[]` on
+  the stack whose address modulo 4 is non-zero, or an offset pointer into a larger buffer.
+  The fuzzer found this by passing `scratch + vbuf_size/2` where `vbuf_size/2` was
+  not a multiple of 4 (e.g., 1407), causing `vbuf` to be at an odd address.
+- **Reproduction sketch:**
+  ```c
+  #define STB_EASY_FONT_IMPLEMENTATION
+  #include "stb_easy_font.h"
+  int main() {
+      char buf[128];  // may not be 4-byte aligned as a char array
+      // Pass buf+1 to force misalignment
+      stb_easy_font_print(0, 0, "Hello", NULL, buf + 1, sizeof(buf) - 1);
+      return 0;
+  }
+  ```
+- **Status:** Patched
+- **Fix:** Replaced direct `(float *)` and `(stb_easy_font_color *)` pointer casts in `stb_easy_font_draw_segs` (lines 182-186) with `memcpy` calls through `char *` destination, which correctly handles unaligned addresses. Added `#include <string.h>` to support the `memcpy` calls. This avoids the undefined behavior of misaligned access and strict-aliasing violations while preserving the existing buffer layout and API.
+
 ## Session Summary — 2026-06-17
 
 | Bug ID | Severity | Class | Status | Notes |
@@ -117,3 +153,4 @@
 | BUG-stb_easy_font-002 | Medium | Integer Overflow | Patched | Fixed overflow-prone buffer size check. |
 | BUG-stb_easy_font-003 | Low | NULL Pointer Dereference | Patched | Added NULL guard for `text` in all three functions. |
 | BUG-stb_easy_font-004 | Medium | NULL Pointer Dereference (Write) | Patched | Added NULL guard for `vertex_buffer` in `stb_easy_font_print`. |
+| BUG-stb_easy_font-005 | Low | Undefined Behavior (Misaligned Access) | Patched | Replaced direct `float*` casts with `memcpy` in `stb_easy_font_draw_segs`. |
