@@ -230,7 +230,8 @@
                STBIR_RGBA, STBIR_TYPE_UINT8,
                STBIR_EDGE_CLAMP, STBIR_FILTER_DEFAULT);
   ```
-- **Status:** Unvalidated
+- **Status:** Invalid
+- **Invalid reason:** The overflow path at line 7547 is already blocked before it can be reached. The scanline-size check in `stbir_quick_resize_helper` (line 8133, `scanline_output > 0x7fffffff`) rejects this overflow for the medium API. The `coefficients_size > 0x7fffffff` check in `stbir__set_sampler` (line 6672, added by BUG-011) blocks it for the extended API. Tested with ASan+UBSan via medium API, extended API, and point-sample extended API — no signed integer overflow detected in any path.
 
 ## BUG-stb_image_resize2-010
 
@@ -258,7 +259,9 @@
   stbir_resize_region(input, ..., offset_x=0x4000000, ...);
   ```
   (Requires the extended API path that sets `offset_x` to a large value.)
-- **Status:** Unvalidated
+- **Status:** Invalid
+- **Invalid reason:** The overflow path `info->offset_x * info->channels * stbir__type_size[output_type]` at line 7550 requires `offset_x > 536870911` (for RGBA UINT8). But `offset_x` is set from `resize->output_subx`, which is clipped to be < `output_w` by `stbir__calculate_region_transform` (line 7723). So `output_w > 536870911` is required, which is blocked by the `coefficients_size > 0x7fffffff` check in `stbir__set_sampler` (line 6672, added by BUG-011). Tested with ASan+UBSan via medium API and extended API — no signed integer overflow detected in any path.
+
 
 ## BUG-stb_image_resize2-011
 
@@ -328,7 +331,8 @@
   // Here scale = 1/1e9 = 1e-9, inv_scale = 1e9
   // support(scale, ...) * 2.0 / scale = ~2.0 * 2.0 / 1e-9 = 4e9 > INT_MAX
   ```
-- **Status:** Unvalidated
+- **Status:** Invalid
+- **Invalid reason:** The extreme downscale path (input_w=2000000000, output_w=1) required for the float-to-int overflow is blocked before reaching `stbir__get_coefficient_width`. The medium API returns NULL due to `scanline_input > 0x7fffffff` check in `stbir_quick_resize_helper`. The extended API build_samplers returns 0 due to `coefficients_size > 0x7fffffff` check (BUG-011) in `stbir__set_sampler`. Tested with ASan+UBSan — no float-to-int overflow detected.
 
 ## BUG-stb_image_resize2-013
 
@@ -360,7 +364,8 @@
                STBIR_RGBA, STBIR_TYPE_FLOAT,
                STBIR_EDGE_CLAMP, STBIR_FILTER_DEFAULT);
   ```
-- **Status:** Unvalidated
+- **Status:** Invalid
+- **Invalid reason:** The float underflow path (input_w=0x7fffffff, output_w=1) is blocked before reaching `stbir__calculate_region_transform`. The medium API returns NULL due to `scanline_input > 0x7fffffff` check in `stbir_quick_resize_helper`. The extended API build_samplers returns 0 due to `coefficients_size > 0x7fffffff` check (BUG-011) in `stbir__set_sampler`. Tested with ASan+UBSan — no float underflow/infinity detected.
 
 ## BUG-stb_image_resize2-014
 
@@ -388,7 +393,79 @@
 - **Status:** Patched
 - **Fix:** Added bounds checks in `stbir__perform_build` for `horizontal_edge`, `vertical_edge`, `input_pixel_layout_public`, `output_pixel_layout_public`, `input_data_type`, and `output_data_type` (the edge/pixel_layout fixes from BUG-004/006/007 collectively address this gap).
 
-## Session Summary — 2026-06-09
+## BUG-stb_image_resize2-015
+
+- **Library:** `stb_image_resize2.h`
+- **Severity:** Medium
+- **Class:** Undefined Behavior (Misaligned Memory Access)
+- **Location:** `stb_image_resize2.h:3746`
+- **Source:** fuzzer crash (misaligned `stbir_uint64` store)
+- **Technique:** fuzzing
+- **Description:**
+  In `stbir__pack_coefficients`, the `STBIR_MOVE_2` macro (line 3710)
+  casts a `float*` to `stbir_uint64*` and performs a direct 8-byte
+  store: `((stbir_uint64*)(dest))[0] = ((stbir_uint64*)(src))[0]`.
+  When `widest == 3` (coefficient width of 3 floats, 12 bytes), the
+  destination pointer `pc` advances by 3 floats per iteration. After
+  the first iteration, `pc` is at offset 12 bytes from the base, which
+  is not 8-byte aligned (12 mod 8 = 4). Every subsequent odd-numbered
+  iteration writes to a misaligned address. The coefficient buffer is
+  allocated via `STBIR__NEXT_PTR` (16-byte aligned), but the 12-byte
+  stride causes misalignment after the first iteration.
+  On ARM platforms this causes a SIGBUS; on x86 the hardware handles
+  it (with a performance penalty), but it is undefined behavior per
+  the C standard.
+- **Reproduction sketch:**
+  ```c
+  // Any 3-channel resize where coefficient_width == 3
+  // (e.g., 3x3 → 9x9 with a cubic filter and reflect edge mode)
+  stbir_resize(input, 3, 3, 0, output, 9, 9, 0,
+               STBIR_RGBA, STBIR_TYPE_UINT8,
+               STBIR_EDGE_REFLECT, STBIR_FILTER_CUBICBSPLINE);
+  ```
+- **Status:** Patched
+- **Validation test:** `tests/bug_stb_image_resize2_015.c` — UBSan reports store to misaligned address for type `stbir_uint64` at stb_image_resize2.h:3746.
+- **Fix:** Replaced `((stbir_uint64*)(dest))[0] = ((stbir_uint64*)(src))[0];` with `memcpy( dest, src, sizeof(stbir_uint64) );` in the `STBIR_MOVE_2` macro at line 3710. Using memcpy avoids the undefined behavior of casting `float*` to `stbir_uint64*` on a potentially misaligned address, while producing identical machine code on x86.
+
+## BUG-stb_image_resize2-016
+
+- **Library:** `stb_image_resize2.h`
+- **Severity:** Medium
+- **Class:** Undefined Behavior (Misaligned Memory Access)
+- **Location:** `stb_image_resize2.h:8744` (and 8532)
+- **Source:** fuzzer crash (misaligned `int` store)
+- **Technique:** fuzzing
+- **Description:**
+  In the non-SIMD fallback path of `stbir__encode_uint8_linear` (and
+  likely other `stbir__encode_*` functions sharing the same code
+  pattern), the block-of-4 optimization loop writes:
+  ```c
+  *(int*)(output-4) = stbir__simdi_to_int( i0 );
+  ```
+  This casts an `unsigned char*` to `int*` and stores 4 bytes,
+  requiring 4-byte alignment. However, the output buffer pointer is
+  computed per scanline as:
+  ```c
+  (char*)stbir_info->output_data + n * stbir_info->output_stride_bytes
+  ```
+  When `output_stride_bytes` is not a multiple of 4 (e.g., packed BGR
+  images where stride = width × 3, or packed 2-channel images where
+  stride = width × 2), odd-numbered scanlines land on addresses
+  misaligned for `int`. On ARM this causes SIGBUS; on x86 it is
+  silently handled but still undefined behavior.
+- **Reproduction sketch:**
+  ```c
+  // BGR (3-channel) image with default packed stride
+  // output stride = 2 * 3 * 1 = 6 bytes/scanline (not a multiple of 4)
+  stbir_resize(input, 2, 10, 0, output, 2, 10, 0,
+               STBIR_BGR, STBIR_TYPE_UINT8,
+               STBIR_EDGE_CLAMP, STBIR_FILTER_DEFAULT);
+  ```
+- **Status:** Patched
+- **Validation test:** `tests/bug_stb_image_resize2_016.c` — UBSan reports store to misaligned address for type 'int' at stb_image_resize2.h:8744.
+- **Fix:** Replaced `*(int*)(output-4) = stbir__simdi_to_int( i0 );` with `{ int stbir__tmp_i = stbir__simdi_to_int( i0 ); memcpy( output-4, &stbir__tmp_i, sizeof(int) ); }` at lines 8532 and 8744. Using memcpy avoids the undefined behavior of casting `unsigned char*` to `int*` on a potentially misaligned address, while producing identical machine code on x86.
+
+## Session Summary — 2026-06-17
 
 | Bug ID | Severity | Class | Status | Notes |
 |--------|----------|-------|--------|-------|
@@ -400,9 +477,11 @@
 | BUG-stb_image_resize2-006 | High | OOB Array Index | Patched | Pixel layout validation at stbir__perform_build:7950-7951 |
 | BUG-stb_image_resize2-007 | High | OOB Array Index | Patched | Data type validation at stbir__quick_resize_helper:8112 & stbir__perform_build:7952-7953 |
 | BUG-stb_image_resize2-008 | Medium | Missing Input Validation | Patched | Bounds check added in stbir_set_datatypes:7804-7805 |
-| BUG-stb_image_resize2-009 | High | Integer Overflow | Unvalidated | Not reached this session |
-| BUG-stb_image_resize2-010 | High | Integer Overflow | Unvalidated | Not reached this session |
+| BUG-stb_image_resize2-009 | High | Integer Overflow | Invalid | Pre-blocked by BUG-011's coefficients_size check |
+| BUG-stb_image_resize2-010 | High | Integer Overflow | Invalid | Pre-blocked by BUG-011's coefficients_size check |
 | BUG-stb_image_resize2-011 | High | Signed Integer Overflow | Patched | Overflow-safe coefficients_size at stbir__set_sampler:6672-6675 |
-| BUG-stb_image_resize2-012 | Medium | Float-to-Int Overflow | Unvalidated | Not reached this session |
-| BUG-stb_image_resize2-013 | Medium | Float Underflow / Infinity | Unvalidated | Not reached this session |
+| BUG-stb_image_resize2-012 | Medium | Float-to-Int Overflow | Invalid | Pre-blocked by scanline_input and coefficients_size checks |
+| BUG-stb_image_resize2-013 | Medium | Float Underflow / Infinity | Invalid | Pre-blocked by scanline_input and coefficients_size checks |
 | BUG-stb_image_resize2-014 | Medium | Missing Validation | Patched | Added edge, pixel_layout, data_type validation in stbir__perform_build |
+| BUG-stb_image_resize2-015 | Medium | Misaligned uint64 | Patched | STBIR_MOVE_2: cast+store → memcpy at stb_image_resize2.h:3710 |
+| BUG-stb_image_resize2-016 | Medium | Misaligned int store | Patched | Non-SIMD encode: cast+store → memcpy at stb_image_resize2.h:8532, 8744 |

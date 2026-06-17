@@ -3707,7 +3707,7 @@ static void stbir__cleanup_gathered_coefficients( stbir_edge edge, stbir__filter
 static int stbir__pack_coefficients( int num_contributors, stbir__contributors* contributors, float * coefficents, int coefficient_width, int widest, int row0, int row1 ) 
 {
   #define STBIR_MOVE_1( dest, src ) { STBIR_NO_UNROLL(dest); ((stbir_uint32*)(dest))[0] = ((stbir_uint32*)(src))[0]; }
-  #define STBIR_MOVE_2( dest, src ) { STBIR_NO_UNROLL(dest); ((stbir_uint64*)(dest))[0] = ((stbir_uint64*)(src))[0]; }
+  #define STBIR_MOVE_2( dest, src ) { STBIR_NO_UNROLL(dest); memcpy( dest, src, sizeof(stbir_uint64) ); }
   #ifdef STBIR_SIMD
   #define STBIR_MOVE_4( dest, src ) { stbir__simdf t; STBIR_NO_UNROLL(dest); stbir__simdf_load( t, src ); stbir__simdf_store( dest, t ); }
   #else
@@ -8529,7 +8529,7 @@ static void STBIR__CODER_NAME( stbir__encode_uint8_linear_scaled )( void * outpu
     stbir__simdf_madd( e0, STBIR__CONSTF(STBIR_simd_point5), STBIR__CONSTF(STBIR_max_uint8_as_float), e0 );
     stbir__encode_simdf4_unflip( e0 );
     stbir__simdf_pack_to_8bytes( i0, e0, e0 );  // only use first 4
-    *(int*)(output-4) = stbir__simdi_to_int( i0 );
+    { int stbir__tmp_i = stbir__simdi_to_int( i0 ); memcpy( output-4, &stbir__tmp_i, sizeof(int) ); }
     output += 4;
     encode += 4;
   }
@@ -8741,7 +8741,7 @@ static void STBIR__CODER_NAME( stbir__encode_uint8_linear )( void * outputp, int
     stbir__simdf_add( e0, STBIR__CONSTF(STBIR_simd_point5), e0 );
     stbir__encode_simdf4_unflip( e0 );
     stbir__simdf_pack_to_8bytes( i0, e0, e0 );  // only use first 4
-    *(int*)(output-4) = stbir__simdi_to_int( i0 );
+    { int stbir__tmp_i = stbir__simdi_to_int( i0 ); memcpy( output-4, &stbir__tmp_i, sizeof(int) ); }
     output += 4;
     encode += 4;
   }

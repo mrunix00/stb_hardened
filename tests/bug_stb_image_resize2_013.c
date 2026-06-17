@@ -1,10 +1,11 @@
-// BUG-012 Validation: Float-to-Integer Overflow in stbir__get_coefficient_width
+// BUG-013 Validation: Float Underflow → Division by Zero / Infinite Scale
 //
-// When scale is extremely small, the expression:
-//   support(scale) * 2.0f / scale  
-// can exceed INT_MAX. Casting (int) of a float > INT_MAX is UB.
+// stbir__calculate_region_transform line 7734:
+//   scale = ( output_range / input_range ) * ratio;
+// When input_range >> output_range, output_range/input_range underflows to 0.0,
+// then inv_scale = 1.0/0.0 = +inf, causing downstream chaos.
 //
-// Test: extreme downscale with large input and tiny output.
+// Test: input_w = INT_MAX (0x7fffffff), output_w = 1
 
 #include <stdlib.h>
 #include <string.h>
@@ -17,24 +18,24 @@
 int main()
 {
     unsigned char *input, *output;
-    int input_w = 2000000000, input_h = 2000000000;
-    int output_w = 1, output_h = 1;
+    int input_w = 0x7fffffff, input_h = 100;
+    int output_w = 1, output_h = 100;
 
     input = malloc(256);
     output = malloc(256);
     if (!input || !output) return -1;
     memset(input, 0, 256);
 
-    printf("BUG-012: Extreme downscale %dx%d -> %dx%d (scale ~5e-10)...\n", input_w, input_h, output_w, output_h);
+    printf("BUG-013: input_w=0x%x -> output_w=%d\n", input_w, output_w);
 
-    // Try medium API
+    // Medium API
     void *r = stbir_resize(input, input_w, input_h, 0,
                             output, output_w, output_h, 0,
                             STBIR_RGBA, STBIR_TYPE_UINT8,
                             STBIR_EDGE_CLAMP, STBIR_FILTER_DEFAULT);
     printf("  medium API result=%p\n", r);
 
-    // Try extended API  
+    // Extended API
     {
         STBIR_RESIZE resize;
         stbir_resize_init(&resize, input, input_w, input_h, 0,
@@ -52,6 +53,6 @@ int main()
 
     free(input);
     free(output);
-    printf("\nDone. If no UBSan float-to-int overflow reported, the bug is non-trivial to trigger.\n");
+    printf("\nDone. If no UBSan float underflow/infinity reported, the bug is non-trivial to trigger.\n");
     return 0;
 }
