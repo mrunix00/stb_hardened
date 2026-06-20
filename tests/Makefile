@@ -51,6 +51,32 @@ $(BUILD_DIR)/image_fuzzer_standalone: $(TEST_DIR)/fuzz_main.c $(TEST_DIR)/stbi_r
 $(BUILD_DIR)/stbi_read_fuzzer: $(TEST_DIR)/stbi_read_fuzzer.c | $(BUILD_DIR)
 	$(CC) $(INCLUDES) $(FUZZ_CFLAGS) $< -lm $(FUZZ_LDFLAGS) -o $@
 
+BENCH_CFLAGS ?= $(COMMON_WARNINGS) -O2 -DNDEBUG $(CFLAGS)
+BENCH_LDFLAGS ?= $(LDFLAGS)
+
+$(BUILD_DIR)/bench_stb_image: $(TEST_DIR)/bench_stb_image.c | $(BUILD_DIR)
+	$(CC) $(INCLUDES) $(BENCH_CFLAGS) $< -lm $(BENCH_LDFLAGS) -o $@
+
+$(BUILD_DIR)/bench_stb_truetype: $(TEST_DIR)/bench_stb_truetype.c | $(BUILD_DIR)
+	$(CC) $(INCLUDES) $(BENCH_CFLAGS) $< -lm $(BENCH_LDFLAGS) -o $@
+
+$(BUILD_DIR)/bench_stb_image_resize2: $(TEST_DIR)/bench_stb_image_resize2.c | $(BUILD_DIR)
+	$(CC) $(INCLUDES) $(BENCH_CFLAGS) $< -lm $(BENCH_LDFLAGS) -o $@
+
+$(BUILD_DIR)/bench_stb_image_write: $(TEST_DIR)/bench_stb_image_write.c | $(BUILD_DIR)
+	$(CC) $(INCLUDES) $(BENCH_CFLAGS) $< -lm $(BENCH_LDFLAGS) -o $@
+
+$(BUILD_DIR)/bench_stb_hexwave: $(TEST_DIR)/bench_stb_hexwave.c | $(BUILD_DIR)
+	$(CC) $(INCLUDES) $(BENCH_CFLAGS) $< -lm $(BENCH_LDFLAGS) -o $@
+
+$(BUILD_DIR)/bench_stb_vorbis: $(TEST_DIR)/bench_stb_vorbis.c | $(BUILD_DIR)
+	$(CC) $(INCLUDES) $(BENCH_CFLAGS) $< -lm $(BENCH_LDFLAGS) -o $@
+
+$(BUILD_DIR)/bench_stb_c_lexer: $(TEST_DIR)/bench_stb_c_lexer.c | $(BUILD_DIR)
+	$(CC) $(INCLUDES) $(BENCH_CFLAGS) $< -lm $(BENCH_LDFLAGS) -o $@
+
+.PHONY: bench bench-stb-image bench-stb-truetype bench-stb-image-resize2 bench-stb-image-write bench-stb-hexwave bench-stb-vorbis bench-stb-c-lexer
+
 $(BUILD_DIR)/stbtt_read_fuzzer: $(TEST_DIR)/stbtt_read_fuzzer.c | $(BUILD_DIR)
 	$(CC) $(INCLUDES) $(FUZZ_CFLAGS) $< -lm $(FUZZ_LDFLAGS) -o $@
 
