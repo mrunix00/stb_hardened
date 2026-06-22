@@ -171,3 +171,105 @@
 | BUG-stb_vorbis-005 | High | Use-After-Free / Uninitialized Free | Patched | memset zero-init at :3683 |
 | BUG-stb_vorbis-010 | Medium | Out-of-Bounds Read (table index) | Patched | &255 mask at :3111 |
 | BUG-stb_vorbis-008 | Medium | Out-of-Bounds Read (sorted_values[-1]) | Invalid | Sentinels at :3851-3852 already protect |
+
+## Session Summary — 2026-06-21 (fuzzing + static analysis)
+
+---
+
+## BUG-stb_vorbis-011
+
+- **Library:** `stb_vorbis.c`
+- **Severity:** High
+- **Class:** Undefined Behavior (Signed Left Shift of Negative Value)
+- **Location:** `stb_vorbis.c:1594-1595`
+- **Source:** libFuzzer + UBSan discovery
+- **Technique:** fuzzing
+- **Description:**
+  `get32_packet` assembles a 32-bit value from four `get8_packet` calls. When `get8_packet` returns `EOP` (-1) on end-of-packet, lines 1594-1595 perform `(-1) << 8` and `(-1) << 16`, which are undefined behavior per C99 §6.5.7 (left-shifting a negative `int`). Line 1596 is safe because it casts to `uint32` first. The UB can cause the compiler to produce unexpected results or silently miscompile code that depends on the assembled value.
+- **Reproduction sketch:**
+  Feed a truncated or malformed Vorbis stream that causes `get8_packet` to return EOP during any `get32_packet` call (e.g. comment header parsing at :3660, setup parsing). UBSan reports: `stb_vorbis.c:1594:24: runtime error: left shift of negative value -1`.
+- **Status:** Patched
+- **Test:** `tests/bug_stb_vorbis_011.c` — UBSan reports left shift of negative value at :1594 and :1595
+- **Fix:** Cast `get8_packet(f)` to `uint32` before shifting on lines 1594-1595 in `get32_packet`, matching the existing cast on line 1596.
+
+---
+
+## BUG-stb_vorbis-012
+
+- **Library:** `stb_vorbis.c`
+- **Severity:** High
+- **Class:** Signed Integer Overflow → Undefined Behavior
+- **Location:** `stb_vorbis.c:3662`
+- **Source:** libFuzzer + UBSan discovery
+- **Technique:** fuzzing
+- **Description:**
+  In comment header parsing, `len = get32_packet(f)` reads the vendor string length. The check `if (len < 0)` rejects negative values, but when `len = INT_MAX` (0x7FFFFFFF), the expression `sizeof(char) * (len+1)` at line 3662 computes `len+1` in `int` arithmetic, overflowing to `INT_MIN`. This is signed integer overflow (undefined behavior). The same pattern exists at line 3689 for comment string lengths.
+- **Reproduction sketch:**
+  Craft an Ogg Vorbis file where the vendor string length field is `0x7FFFFFFF`. Call `stb_vorbis_decode_memory()`. UBSan reports: `stb_vorbis.c:3662:59: runtime error: signed integer overflow: 2147483647 + 1 cannot be represented in type 'int'`.
+- **Status:** Patched
+- **Test:** `tests/bug_stb_vorbis_012.c` — UBSan reports signed integer overflow at :3662
+- **Fix:** Added `len > INT_MAX - 1` overflow guard to both vendor string length check (:3661) and comment string length check (:3688). Prevents `len+1` from overflowing when `len = INT_MAX`.
+
+---
+
+## BUG-stb_vorbis-013
+
+- **Library:** `stb_vorbis.c`
+- **Severity:** Medium
+- **Class:** Data Corruption (Off-by-Error in Clamping Formula)
+- **Location:** `stb_vorbis.c:1899`
+- **Source:** Static analysis
+- **Technique:** static-analysis
+- **Description:**
+  In `codebook_decode_deinterleave_repeat`, the bounds-clamping formula at line 1899 has a sign error. The intent is to compute remaining elements as `len*ch - (p_inter*ch + c_inter)`, but the code computes `len*ch - (p_inter*ch - c_inter)`, which is too large by `2 * c_inter`. When `c_inter > 0` and the clamping condition triggers, the decode loop writes `2*c_inter` extra elements past the intended residue region boundary, corrupting the IMDCT input region of the channel buffer.
+- **Reproduction sketch:**
+  Craft a Vorbis stream with residue type 2, ch > 1, a codebook where `dimensions > 1`, and `c_inter > 0` when the clamping condition triggers. The over-write corrupts audio output.
+- **Status:** Patched
+- **Test:** `tests/bug_stb_vorbis_013.c` — analytical proof: buggy effective=3 vs correct=1 for ch=2, len=256, p_inter=255, c_inter=1
+- **Fix:** Changed `p_inter*ch - c_inter` to `p_inter*ch + c_inter` at :1899. Corrects the remaining-elements calculation in `codebook_decode_deinterleave_repeat` clamping.
+
+---
+
+## BUG-stb_vorbis-014
+
+- **Library:** `stb_vorbis.c`
+- **Severity:** Medium
+- **Class:** Temp Buffer OOB Write (latent, compile-flag dependent)
+- **Location:** `stb_vorbis.c:2158-2161`
+- **Source:** Static analysis
+- **Technique:** static-analysis
+- **Description:**
+  When `STB_VORBIS_DIVIDES_IN_RESIDUE` is defined, the `classifications` temp buffer is allocated with `part_read` elements, but the unpacking loop writes at index `i + pcount` where `i` goes from `classwords-1` to 0. If `classwords > 1` and `pcount` is near `part_read`, this writes beyond the allocated sub-array. The buffer is stack-allocated via `alloca()` by default, so this can corrupt adjacent stack frames.
+- **Reproduction sketch:**
+  Compile with `-DSTB_VORBIS_DIVIDES_IN_RESIDUE`. Craft a stream where the classbook has `dimensions > 1` and `part_read` is not a multiple of `classwords`.
+- **Status:** Patched
+- **Test:** `tests/bug_stb_vorbis_014.c` — compiled with STB_VORBIS_DIVIDES_IN_RESIDUE, analytically confirmed OOB when classwords doesn't divide part_read
+- **Fix:** Added `if (pcount + i < part_read)` bounds check before each `classifications[j][i+pcount]` write in all three residue decode paths (ch==2, ch>2, general).
+
+---
+
+## BUG-stb_vorbis-015
+
+- **Library:** `stb_vorbis.c`
+- **Severity:** Low
+- **Class:** Signed Integer Overflow
+- **Location:** `stb_vorbis.c:5395`
+- **Source:** Static analysis
+- **Technique:** static-analysis
+- **Description:**
+  In the decode-to-short convenience function, `total *= 2` (line 5395) is a signed `int` multiplication that can overflow after repeated doublings. When `total` reaches 2^30, the next doubling overflows to a negative value. Converting to `size_t` produces a huge allocation request. The `realloc` failure is handled gracefully (returns -2), but the signed overflow itself is undefined behavior.
+- **Reproduction sketch:**
+  Decode an extremely long Vorbis stream via `stb_vorbis_decode_filename()` or `stb_vorbis_decode_memory()` — requires ~2 billion samples to trigger.
+- **Status:** Patched
+- **Test:** `tests/bug_stb_vorbis_015.c` — would need ~2B samples to trigger; fix prevents overflow at source
+- **Fix:** Added `if (total > INT_MAX / 2)` guard before `total *= 2` in both `stb_vorbis_decode_filename` and `stb_vorbis_decode_memory`.
+
+---
+
+| Bug ID | Severity | Class | Status | Notes |
+|--------|----------|-------|--------|-------|
+| BUG-stb_vorbis-011 | High | UB (left shift negative) | Patched | Cast get8_packet to uint32 before shift at :1594-1595 |
+| BUG-stb_vorbis-012 | High | Signed Int Overflow | Patched | len > INT_MAX-1 guard at :3661 and :3688 |
+| BUG-stb_vorbis-013 | Medium | Data Corruption (sign error) | Patched | Fixed p_inter*ch - c_inter → p_inter*ch + c_inter at :1899 |
+| BUG-stb_vorbis-014 | Medium | Temp Buffer OOB Write | Patched | Added bounds check before classifications[j][i+pcount] write |
+| BUG-stb_vorbis-015 | Low | Signed Int Overflow | Patched | Added INT_MAX/2 guard before total *= 2 in decode helpers |

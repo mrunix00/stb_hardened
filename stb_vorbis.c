@@ -1591,8 +1591,8 @@ static int get32_packet(vorb *f)
 {
    uint32 x;
    x = get8_packet(f);
-   x += get8_packet(f) << 8;
-   x += get8_packet(f) << 16;
+   x += (uint32) get8_packet(f) << 8;
+   x += (uint32) get8_packet(f) << 16;
    x += (uint32) get8_packet(f) << 24;
    return x;
 }
@@ -1896,7 +1896,7 @@ static int codebook_decode_deinterleave_repeat(vorb *f, Codebook *c, float **out
       // buffer (len*ch), our current offset within it (p_inter*ch)+(c_inter),
       // and the length we'll be using (effective)
       if (c_inter + p_inter*ch + effective > len * ch) {
-         effective = len*ch - (p_inter*ch - c_inter);
+         effective = len*ch - (p_inter*ch + c_inter);
       }
 
    #ifdef STB_VORBIS_DIVIDES_IN_CODEBOOK
@@ -2155,54 +2155,56 @@ static void decode_residue(vorb *f, float *residue_buffers[], int ch, int n, int
                   #ifndef STB_VORBIS_DIVIDES_IN_RESIDUE
                   part_classdata[0][class_set] = r->classdata[q];
                   #else
-                  for (i=classwords-1; i >= 0; --i) {
-                     classifications[0][i+pcount] = q % r->classifications;
-                     q /= r->classifications;
-                  }
-                  #endif
-               }
-               for (i=0; i < classwords && pcount < part_read; ++i, ++pcount) {
-                  int z = r->begin + pcount*r->part_size;
-                  #ifndef STB_VORBIS_DIVIDES_IN_RESIDUE
-                  int c = part_classdata[0][class_set][i];
-                  #else
-                  int c = classifications[0][pcount];
-                  #endif
-                  int b = r->residue_books[c][pass];
-                  if (b >= 0) {
-                     Codebook *book = f->codebooks + b;
-                     #ifdef STB_VORBIS_DIVIDES_IN_CODEBOOK
-                     if (!codebook_decode_deinterleave_repeat(f, book, residue_buffers, ch, &c_inter, &p_inter, n, r->part_size))
-                        goto done;
-                     #else
-                     // saves 1%
-                     if (!codebook_decode_deinterleave_repeat(f, book, residue_buffers, ch, &c_inter, &p_inter, n, r->part_size))
-                        goto done;
-                     #endif
-                  } else {
-                     z += r->part_size;
-                     c_inter = z & 1;
-                     p_inter = z >> 1;
-                  }
-               }
-               #ifndef STB_VORBIS_DIVIDES_IN_RESIDUE
-               ++class_set;
-               #endif
-            }
-         } else if (ch > 2) {
-            while (pcount < part_read) {
-               int z = r->begin + pcount*r->part_size;
-               int c_inter = z % ch, p_inter = z/ch;
-               if (pass == 0) {
-                  Codebook *c = f->codebooks+r->classbook;
-                  int q;
-                  DECODE(q,f,c);
-                  if (q == EOP) goto done;
-                  #ifndef STB_VORBIS_DIVIDES_IN_RESIDUE
-                  part_classdata[0][class_set] = r->classdata[q];
-                  #else
-                  for (i=classwords-1; i >= 0; --i) {
-                     classifications[0][i+pcount] = q % r->classifications;
+                   for (i=classwords-1; i >= 0; --i) {
+                      if (pcount + i < part_read)
+                         classifications[0][i+pcount] = q % r->classifications;
+                      q /= r->classifications;
+                   }
+                   #endif
+                }
+                for (i=0; i < classwords && pcount < part_read; ++i, ++pcount) {
+                   int z = r->begin + pcount*r->part_size;
+                   #ifndef STB_VORBIS_DIVIDES_IN_RESIDUE
+                   int c = part_classdata[0][class_set][i];
+                   #else
+                   int c = classifications[0][pcount];
+                   #endif
+                   int b = r->residue_books[c][pass];
+                   if (b >= 0) {
+                      Codebook *book = f->codebooks + b;
+                      #ifdef STB_VORBIS_DIVIDES_IN_CODEBOOK
+                      if (!codebook_decode_deinterleave_repeat(f, book, residue_buffers, ch, &c_inter, &p_inter, n, r->part_size))
+                         goto done;
+                      #else
+                      // saves 1%
+                      if (!codebook_decode_deinterleave_repeat(f, book, residue_buffers, ch, &c_inter, &p_inter, n, r->part_size))
+                         goto done;
+                      #endif
+                   } else {
+                      z += r->part_size;
+                      c_inter = z & 1;
+                      p_inter = z >> 1;
+                   }
+                }
+                #ifndef STB_VORBIS_DIVIDES_IN_RESIDUE
+                ++class_set;
+                #endif
+             }
+          } else if (ch > 2) {
+             while (pcount < part_read) {
+                int z = r->begin + pcount*r->part_size;
+                int c_inter = z % ch, p_inter = z/ch;
+                if (pass == 0) {
+                   Codebook *c = f->codebooks+r->classbook;
+                   int q;
+                   DECODE(q,f,c);
+                   if (q == EOP) goto done;
+                   #ifndef STB_VORBIS_DIVIDES_IN_RESIDUE
+                   part_classdata[0][class_set] = r->classdata[q];
+                   #else
+                   for (i=classwords-1; i >= 0; --i) {
+                      if (pcount + i < part_read)
+                         classifications[0][i+pcount] = q % r->classifications;
                      q /= r->classifications;
                   }
                   #endif
@@ -2248,8 +2250,9 @@ static void decode_residue(vorb *f, float *residue_buffers[], int ch, int n, int
                   #ifndef STB_VORBIS_DIVIDES_IN_RESIDUE
                   part_classdata[j][class_set] = r->classdata[temp];
                   #else
-                  for (i=classwords-1; i >= 0; --i) {
-                     classifications[j][i+pcount] = temp % r->classifications;
+                   for (i=classwords-1; i >= 0; --i) {
+                      if (pcount + i < part_read)
+                         classifications[j][i+pcount] = temp % r->classifications;
                      temp /= r->classifications;
                   }
                   #endif
@@ -3658,7 +3661,7 @@ static int start_decoder(vorb *f)
    if (!vorbis_validate(header))                    return error(f, VORBIS_invalid_setup);
    //file vendor
     len = get32_packet(f);
-    if (len < 0)                                        return error(f, VORBIS_invalid_setup);
+    if (len < 0 || len > INT_MAX - 1)                      return error(f, VORBIS_invalid_setup);
     f->vendor = (char*)setup_malloc(f, sizeof(char) * (len+1));
     if (f->vendor == NULL)                           return error(f, VORBIS_outofmem);
     for(i=0; i < len; ++i) {
@@ -3685,7 +3688,7 @@ static int start_decoder(vorb *f)
 
    for(i=0; i < f->comment_list_length; ++i) {
       len = get32_packet(f);
-      if (len < 0)                                     return error(f, VORBIS_invalid_setup);
+      if (len < 0 || len > INT_MAX - 1)                   return error(f, VORBIS_invalid_setup);
       f->comment_list[i] = (char*)setup_malloc(f, sizeof(char) * (len+1));
       if (f->comment_list[i] == NULL)               return error(f, VORBIS_outofmem);
 
@@ -5372,27 +5375,32 @@ int stb_vorbis_decode_filename(const char *filename, int *channels, int *sample_
 {
    int data_len, offset, total, limit, error;
    short *data;
-   stb_vorbis *v = stb_vorbis_open_filename(filename, &error, NULL);
-   if (v == NULL) return -1;
-   limit = v->channels * 4096;
-   *channels = v->channels;
-   if (sample_rate)
-      *sample_rate = v->sample_rate;
-   offset = data_len = 0;
-   total = limit;
-   data = (short *) malloc(total * sizeof(*data));
-   if (data == NULL) {
-      stb_vorbis_close(v);
-      return -2;
-   }
-   for (;;) {
-      int n = stb_vorbis_get_frame_short_interleaved(v, v->channels, data+offset, total-offset);
-      if (n == 0) break;
-      data_len += n;
-      offset += n * v->channels;
-      if (offset + limit > total) {
-         short *data2;
-         total *= 2;
+    stb_vorbis *v = stb_vorbis_open_filename(filename, &error, NULL);
+    if (v == NULL) return -1;
+    limit = v->channels * 4096;
+    *channels = v->channels;
+    if (sample_rate)
+       *sample_rate = v->sample_rate;
+    offset = data_len = 0;
+    total = limit;
+    data = (short *) malloc(total * sizeof(*data));
+    if (data == NULL) {
+       stb_vorbis_close(v);
+       return -2;
+    }
+    for (;;) {
+       int n = stb_vorbis_get_frame_short_interleaved(v, v->channels, data+offset, total-offset);
+       if (n == 0) break;
+       data_len += n;
+       offset += n * v->channels;
+       if (offset + limit > total) {
+          short *data2;
+          if (total > INT_MAX / 2) {
+             free(data);
+             stb_vorbis_close(v);
+             return -2;
+          }
+          total *= 2;
          data2 = (short *) realloc(data, total * sizeof(*data));
          if (data2 == NULL) {
             free(data);
@@ -5412,27 +5420,32 @@ int stb_vorbis_decode_memory(const uint8 *mem, int len, int *channels, int *samp
 {
    int data_len, offset, total, limit, error;
    short *data;
-   stb_vorbis *v = stb_vorbis_open_memory(mem, len, &error, NULL);
-   if (v == NULL) return -1;
-   limit = v->channels * 4096;
-   *channels = v->channels;
-   if (sample_rate)
-      *sample_rate = v->sample_rate;
-   offset = data_len = 0;
-   total = limit;
-   data = (short *) malloc(total * sizeof(*data));
-   if (data == NULL) {
-      stb_vorbis_close(v);
-      return -2;
-   }
-   for (;;) {
-      int n = stb_vorbis_get_frame_short_interleaved(v, v->channels, data+offset, total-offset);
-      if (n == 0) break;
-      data_len += n;
-      offset += n * v->channels;
-      if (offset + limit > total) {
-         short *data2;
-         total *= 2;
+    stb_vorbis *v = stb_vorbis_open_memory(mem, len, &error, NULL);
+    if (v == NULL) return -1;
+    limit = v->channels * 4096;
+    *channels = v->channels;
+    if (sample_rate)
+       *sample_rate = v->sample_rate;
+    offset = data_len = 0;
+    total = limit;
+    data = (short *) malloc(total * sizeof(*data));
+    if (data == NULL) {
+       stb_vorbis_close(v);
+       return -2;
+    }
+    for (;;) {
+       int n = stb_vorbis_get_frame_short_interleaved(v, v->channels, data+offset, total-offset);
+       if (n == 0) break;
+       data_len += n;
+       offset += n * v->channels;
+       if (offset + limit > total) {
+          short *data2;
+          if (total > INT_MAX / 2) {
+             free(data);
+             stb_vorbis_close(v);
+             return -2;
+          }
+          total *= 2;
          data2 = (short *) realloc(data, total * sizeof(*data));
          if (data2 == NULL) {
             free(data);
