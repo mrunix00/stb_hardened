@@ -782,6 +782,8 @@ STBIRDEF void stbir_resize_split_profile_info( STBIR_PROFILE_INFO * out_info, ST
 
 #if defined(STB_IMAGE_RESIZE_IMPLEMENTATION) || defined(STB_IMAGE_RESIZE2_IMPLEMENTATION)
 
+#include <string.h>  /* always needed for memcpy in STBIR_MOVE_2 / encode paths */
+
 #ifndef STBIR_ASSERT
 #include <assert.h>
 #define STBIR_ASSERT(x) assert(x)
@@ -1401,6 +1403,7 @@ static stbir__inline stbir_uint8 stbir__linear_to_srgb_uchar(float in)
 
   #define stbir__simdf_and( out, reg0, reg1 ) (out) = _mm_and_ps( reg0, reg1 )
   #define stbir__simdf_or( out, reg0, reg1 ) (out) = _mm_or_ps( reg0, reg1 )
+  #define stbir__simdf_eq( out, reg0, reg1 ) (out) = _mm_cmpeq_ps( reg0, reg1 )
 
   #define stbir__simdf_min( out, reg0, reg1 ) (out) = _mm_min_ps( reg0, reg1 )
   #define stbir__simdf_max( out, reg0, reg1 ) (out) = _mm_max_ps( reg0, reg1 )
@@ -1802,6 +1805,7 @@ static stbir__inline stbir_uint8 stbir__linear_to_srgb_uchar(float in)
 
   #define stbir__simdf_and( out, reg0, reg1 ) (out) = vreinterpretq_f32_u32( vandq_u32( vreinterpretq_u32_f32(reg0), vreinterpretq_u32_f32(reg1) ) )
   #define stbir__simdf_or( out, reg0, reg1 ) (out) = vreinterpretq_f32_u32( vorrq_u32( vreinterpretq_u32_f32(reg0), vreinterpretq_u32_f32(reg1) ) )
+  #define stbir__simdf_eq( out, reg0, reg1 ) (out) = vreinterpretq_f32_u32( vceqq_f32( reg0, reg1 ) )
 
   #define stbir__simdf_min( out, reg0, reg1 ) (out) = vminq_f32( reg0, reg1 )
   #define stbir__simdf_max( out, reg0, reg1 ) (out) = vmaxq_f32( reg0, reg1 )
@@ -2059,6 +2063,7 @@ static stbir__inline stbir_uint8 stbir__linear_to_srgb_uchar(float in)
 
   #define stbir__simdf_and( out, reg0, reg1 ) (out) = wasm_v128_and( reg0, reg1 )
   #define stbir__simdf_or( out, reg0, reg1 )  (out) = wasm_v128_or( reg0, reg1 )
+  #define stbir__simdf_eq( out, reg0, reg1 )  (out) = wasm_f32x4_eq( reg0, reg1 )
 
   #define stbir__simdf_min( out, reg0, reg1 ) (out) = wasm_f32x4_min( reg0, reg1 )
   #define stbir__simdf_max( out, reg0, reg1 ) (out) = wasm_f32x4_max( reg0, reg1 )
@@ -8830,6 +8835,9 @@ static float * STBIR__CODER_NAME(stbir__decode_uint8_srgb)( float * decodep, int
 }
 
 #define stbir__min_max_shift20( i, f ) \
+    { stbir__simdf _finite; \
+      stbir__simdf_eq( _finite, f, f ); \
+      stbir__simdf_and( f, f, _finite ); } \
     stbir__simdf_max( f, f, stbir_simdf_casti(STBIR__CONSTI( STBIR_almost_zero )) ); \
     stbir__simdf_min( f, f, stbir_simdf_casti(STBIR__CONSTI( STBIR_almost_one  )) ); \
     stbir__simdi_32shr( i, stbir_simdi_castf( f ), 20 );

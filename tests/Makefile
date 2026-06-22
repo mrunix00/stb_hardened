@@ -116,6 +116,10 @@ $(BUILD_DIR)/stb_image_resize2_fuzzer_standalone: $(TEST_DIR)/fuzz_main.c $(TEST
 $(BUILD_DIR)/bug_%: $(TEST_DIR)/bug_%.c | $(BUILD_DIR)
 	$(CC) $(INCLUDES) $(TEST_CFLAGS) $< -lm $(TEST_LDFLAGS) -o $@
 
+# BUG-017 needs the fuzzer source as a second TU to reproduce the UB
+$(BUILD_DIR)/bug_stb_image_resize2_017: $(TEST_DIR)/bug_stb_image_resize2_017.c $(TEST_DIR)/stb_image_resize2_fuzzer.c | $(BUILD_DIR)
+	$(CC) $(INCLUDES) $(TEST_CFLAGS) $< $(TEST_DIR)/stb_image_resize2_fuzzer.c -lm $(TEST_LDFLAGS) -o $@
+
 bug-tests: $(BUG_TEST_BINS)
 	@if [ -z "$(BUG_TEST_SRCS)" ]; then \
 		printf '%s\n' 'No hardening regression tests found in tests/bug_*.c'; \

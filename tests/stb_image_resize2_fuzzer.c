@@ -120,19 +120,33 @@ int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
     }
     memset(output_pixels, 0, output_bytes);
 
-    int input_stride = 0;
-    if (use_input_stride)
-        input_stride = input_w * channels * (int)sizeof(float);
-
-    int output_stride = 0;  /* default packed */
-
     /* ---- exercise the API ---- */
     switch (api_mode) {
     case 0:
-        /* stbir_resize - medium API */
-        stbir_resize(input_pixels, input_w, input_h, input_stride,
-                     output_pixels, output_w, output_h, output_stride,
-                     layout, dtype, edge, flt);
+        /* stbir_resize - medium API (supports all datatypes) */
+        {
+            /* Allocate matching buffer for the datatype */
+            int type_size = (dtype == STBIR_TYPE_UINT16 || dtype == STBIR_TYPE_HALF_FLOAT) ? 2
+                          : (dtype == STBIR_TYPE_FLOAT) ? 4 : 1;
+            size_t in_bytes  = (size_t)input_w * (size_t)input_h * (size_t)channels * (size_t)type_size;
+            size_t out_bytes = (size_t)output_w * (size_t)output_h * (size_t)channels * (size_t)type_size;
+            void *in_buf  = malloc(in_bytes);
+            void *out_buf = malloc(out_bytes);
+            if (in_buf && out_buf) {
+                memset(in_buf, 0, in_bytes);
+                memset(out_buf, 0, out_bytes);
+                /* copy fuzz data into the type-appropriate buffer */
+                size_t cpy = (size > 14) ? (size - 14) : 0;
+                if (cpy > in_bytes) cpy = in_bytes;
+                memcpy(in_buf, data + 14, cpy);
+                int m_stride = use_input_stride ? (input_w * channels * type_size) : 0;
+                stbir_resize(in_buf, input_w, input_h, m_stride,
+                             out_buf, output_w, output_h, 0,
+                             layout, dtype, edge, flt);
+            }
+            free(in_buf);
+            free(out_buf);
+        }
         break;
     case 1:
         /* stbir_resize_uint8_srgb - easy API */
@@ -142,12 +156,13 @@ int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
             unsigned char *u8_input  = (unsigned char *)malloc(u8_input_bytes);
             unsigned char *u8_output = (unsigned char *)malloc(u8_output_bytes);
             if (u8_input && u8_output) {
+                int u8_stride = use_input_stride ? (input_w * channels) : 0;
                 memset(u8_input, 0, u8_input_bytes);
                 memset(u8_output, 0, u8_output_bytes);
                 if (copy_bytes > u8_input_bytes) copy_bytes = u8_input_bytes;
                 memcpy(u8_input, data + 14, copy_bytes);
-                stbir_resize_uint8_srgb(u8_input, input_w, input_h, input_stride,
-                                        u8_output, output_w, output_h, output_stride,
+                stbir_resize_uint8_srgb(u8_input, input_w, input_h, u8_stride,
+                                        u8_output, output_w, output_h, 0,
                                         layout);
             }
             free(u8_input);
@@ -162,13 +177,14 @@ int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
             unsigned char *u8_input  = (unsigned char *)malloc(u8_input_bytes);
             unsigned char *u8_output = (unsigned char *)malloc(u8_output_bytes);
             if (u8_input && u8_output) {
+                int u8_stride = use_input_stride ? (input_w * channels) : 0;
                 memset(u8_input, 0, u8_input_bytes);
                 memset(u8_output, 0, u8_output_bytes);
                 size_t cpy = size - 14;
                 if (cpy > u8_input_bytes) cpy = u8_input_bytes;
                 memcpy(u8_input, data + 14, cpy);
-                stbir_resize_uint8_linear(u8_input, input_w, input_h, input_stride,
-                                          u8_output, output_w, output_h, output_stride,
+                stbir_resize_uint8_linear(u8_input, input_w, input_h, u8_stride,
+                                          u8_output, output_w, output_h, 0,
                                           layout);
             }
             free(u8_input);
@@ -177,18 +193,19 @@ int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
         break;
     case 3:
         /* stbir_resize_float_linear - easy API */
-        stbir_resize_float_linear(input_pixels, input_w, input_h, input_stride,
-                                  output_pixels, output_w, output_h, output_stride,
+        stbir_resize_float_linear(input_pixels, input_w, input_h, 0,
+                                  output_pixels, output_w, output_h, 0,
                                   layout);
         break;
     case 4:
         /* Extended API via stbir_resize_init / stbir_resize_extended */
         {
+            int ext_stride = use_input_stride ? (input_w * channels * (int)sizeof(float)) : 0;
             STBIR_RESIZE resize;
             memset(&resize, 0, sizeof(resize));
             stbir_resize_init(&resize,
-                              input_pixels, input_w, input_h, input_stride,
-                              output_pixels, output_w, output_h, output_stride,
+                              input_pixels, input_w, input_h, ext_stride,
+                              output_pixels, output_w, output_h, 0,
                               layout, dtype);
             stbir_set_edgemodes(&resize, edge, edge);
             stbir_set_filters(&resize, flt, flt);

@@ -485,3 +485,54 @@
 | BUG-stb_image_resize2-014 | Medium | Missing Validation | Patched | Added edge, pixel_layout, data_type validation in stbir__perform_build |
 | BUG-stb_image_resize2-015 | Medium | Misaligned uint64 | Patched | STBIR_MOVE_2: cast+store → memcpy at stb_image_resize2.h:3710 |
 | BUG-stb_image_resize2-016 | Medium | Misaligned int store | Patched | Non-SIMD encode: cast+store → memcpy at stb_image_resize2.h:8532, 8744 |
+
+## BUG-stb_image_resize2-017
+
+- **Library:** `stb_image_resize2.h`
+- **Severity:** High
+- **Class:** Out-of-Bounds Table Index
+- **Location:** `stb_image_resize2.h:8922`
+- **Source:** fuzzer crash (crash-7963acff5519cf507132bc3fcad6877de2c4fe06, crash-c459c94399ed67a997764b7669a79d5060d5133d)
+- **Technique:** fuzzing
+- **Description:**
+  In the SIMD encode path of `stbir__encode_uint8_srgb` (and similarly
+  `stbir__encode_uint8_srgb4_linearalpha` at line 9027), the
+  `stbir__min_max_shift20` macro clamps float values to
+  `[almost_zero, almost_one]` and shifts right by 20 to produce a
+  table index for `fp32_to_srgb8_tab4[104]`. The table is accessed
+  via a base pointer offset of `-(127-13)*8 = -912`, so valid shift
+  results must be in `[912, 1015]`.
+  
+  When `STBIR_ASSERT` is disabled (as in fuzzing builds), the library
+  can reach the encode path with intermediate float values containing
+  NaN (from degenerate resampling with edge WRAP on small images).
+  The SIMD `_mm_max_ps` clamp of NaN should return the non-NaN
+  operand, but the UBSan report shows index `-912`, meaning the shift
+  result is 0. This indicates the clamp did not elevate the value
+  above `almost_zero`, allowing the OOB table access.
+  
+  This crashes under UBSan with `abort_on_error=1` and causes
+  undefined behavior in production builds.
+- **Reproduction sketch:**
+  ```c
+  #define STBIR_ASSERT(x) ((void)0)
+  #define STB_IMAGE_RESIZE_IMPLEMENTATION
+  #include "stb_image_resize2.h"
+  #include <string.h>
+  #include <stdlib.h>
+  int main() {
+      unsigned char *in = malloc(3*3*4);
+      unsigned char *out = malloc(9*9*4);
+      memset(in, 0, 3*3*4);
+      memset(out, 0, 9*9*4);
+      stbir_resize(in, 3, 3, 0, out, 9, 9, 0,
+                   STBIR_RGBA, STBIR_TYPE_UINT8,
+                   STBIR_EDGE_WRAP, STBIR_FILTER_DEFAULT);
+      free(in); free(out);
+      return 0;
+  }
+  ```
+  Compile with: `clang -I. -g -O1 -fsanitize=address,undefined -o test test.c -lm`
+  Run with: `UBSAN_OPTIONS=halt_on_error=1:abort_on_error=1 ./test`
+- **Status:** Validated
+- **Validation test:** `tests/bug_stb_image_resize2_017.c` — UBSan reports "index -912 out of bounds for type 'const stbir_uint32[104]'".
