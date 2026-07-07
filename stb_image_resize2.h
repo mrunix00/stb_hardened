@@ -8858,13 +8858,15 @@ static float * STBIR__CODER_NAME(stbir__decode_uint8_srgb)( float * decodep, int
     stbir__simdi_32shr( i, i, 16 ); \
 }
 
+#define stbir__srgb_table_index(i) ((i) < ((127-13)*8) ? ((127-13)*8) : ((i) > ((127-13)*8 + 103) ? ((127-13)*8 + 103) : (i)))
+
 #define stbir__simdi_table_lookup2( v0,v1, table ) \
 { \
   stbir__simdi_u32 temp0,temp1; \
   temp0.m128i_i128 = v0; \
   temp1.m128i_i128 = v1; \
-  temp0.m128i_u32[0] = table[temp0.m128i_i32[0]]; temp0.m128i_u32[1] = table[temp0.m128i_i32[1]]; temp0.m128i_u32[2] = table[temp0.m128i_i32[2]]; temp0.m128i_u32[3] = table[temp0.m128i_i32[3]]; \
-  temp1.m128i_u32[0] = table[temp1.m128i_i32[0]]; temp1.m128i_u32[1] = table[temp1.m128i_i32[1]]; temp1.m128i_u32[2] = table[temp1.m128i_i32[2]]; temp1.m128i_u32[3] = table[temp1.m128i_i32[3]]; \
+  temp0.m128i_u32[0] = table[stbir__srgb_table_index(temp0.m128i_i32[0])-((127-13)*8)]; temp0.m128i_u32[1] = table[stbir__srgb_table_index(temp0.m128i_i32[1])-((127-13)*8)]; temp0.m128i_u32[2] = table[stbir__srgb_table_index(temp0.m128i_i32[2])-((127-13)*8)]; temp0.m128i_u32[3] = table[stbir__srgb_table_index(temp0.m128i_i32[3])-((127-13)*8)]; \
+  temp1.m128i_u32[0] = table[stbir__srgb_table_index(temp1.m128i_i32[0])-((127-13)*8)]; temp1.m128i_u32[1] = table[stbir__srgb_table_index(temp1.m128i_i32[1])-((127-13)*8)]; temp1.m128i_u32[2] = table[stbir__srgb_table_index(temp1.m128i_i32[2])-((127-13)*8)]; temp1.m128i_u32[3] = table[stbir__srgb_table_index(temp1.m128i_i32[3])-((127-13)*8)]; \
   v0 = temp0.m128i_i128; \
   v1 = temp1.m128i_i128; \
 }
@@ -8875,9 +8877,9 @@ static float * STBIR__CODER_NAME(stbir__decode_uint8_srgb)( float * decodep, int
   temp0.m128i_i128 = v0; \
   temp1.m128i_i128 = v1; \
   temp2.m128i_i128 = v2; \
-  temp0.m128i_u32[0] = table[temp0.m128i_i32[0]]; temp0.m128i_u32[1] = table[temp0.m128i_i32[1]]; temp0.m128i_u32[2] = table[temp0.m128i_i32[2]]; temp0.m128i_u32[3] = table[temp0.m128i_i32[3]]; \
-  temp1.m128i_u32[0] = table[temp1.m128i_i32[0]]; temp1.m128i_u32[1] = table[temp1.m128i_i32[1]]; temp1.m128i_u32[2] = table[temp1.m128i_i32[2]]; temp1.m128i_u32[3] = table[temp1.m128i_i32[3]]; \
-  temp2.m128i_u32[0] = table[temp2.m128i_i32[0]]; temp2.m128i_u32[1] = table[temp2.m128i_i32[1]]; temp2.m128i_u32[2] = table[temp2.m128i_i32[2]]; temp2.m128i_u32[3] = table[temp2.m128i_i32[3]]; \
+  temp0.m128i_u32[0] = table[stbir__srgb_table_index(temp0.m128i_i32[0])-((127-13)*8)]; temp0.m128i_u32[1] = table[stbir__srgb_table_index(temp0.m128i_i32[1])-((127-13)*8)]; temp0.m128i_u32[2] = table[stbir__srgb_table_index(temp0.m128i_i32[2])-((127-13)*8)]; temp0.m128i_u32[3] = table[stbir__srgb_table_index(temp0.m128i_i32[3])-((127-13)*8)]; \
+  temp1.m128i_u32[0] = table[stbir__srgb_table_index(temp1.m128i_i32[0])-((127-13)*8)]; temp1.m128i_u32[1] = table[stbir__srgb_table_index(temp1.m128i_i32[1])-((127-13)*8)]; temp1.m128i_u32[2] = table[stbir__srgb_table_index(temp1.m128i_i32[2])-((127-13)*8)]; temp1.m128i_u32[3] = table[stbir__srgb_table_index(temp1.m128i_i32[3])-((127-13)*8)]; \
+  temp2.m128i_u32[0] = table[stbir__srgb_table_index(temp2.m128i_i32[0])-((127-13)*8)]; temp2.m128i_u32[1] = table[stbir__srgb_table_index(temp2.m128i_i32[1])-((127-13)*8)]; temp2.m128i_u32[2] = table[stbir__srgb_table_index(temp2.m128i_i32[2])-((127-13)*8)]; temp2.m128i_u32[3] = table[stbir__srgb_table_index(temp2.m128i_i32[3])-((127-13)*8)]; \
   v0 = temp0.m128i_i128; \
   v1 = temp1.m128i_i128; \
   v2 = temp2.m128i_i128; \
@@ -8890,10 +8892,10 @@ static float * STBIR__CODER_NAME(stbir__decode_uint8_srgb)( float * decodep, int
   temp1.m128i_i128 = v1; \
   temp2.m128i_i128 = v2; \
   temp3.m128i_i128 = v3; \
-  temp0.m128i_u32[0] = table[temp0.m128i_i32[0]]; temp0.m128i_u32[1] = table[temp0.m128i_i32[1]]; temp0.m128i_u32[2] = table[temp0.m128i_i32[2]]; temp0.m128i_u32[3] = table[temp0.m128i_i32[3]]; \
-  temp1.m128i_u32[0] = table[temp1.m128i_i32[0]]; temp1.m128i_u32[1] = table[temp1.m128i_i32[1]]; temp1.m128i_u32[2] = table[temp1.m128i_i32[2]]; temp1.m128i_u32[3] = table[temp1.m128i_i32[3]]; \
-  temp2.m128i_u32[0] = table[temp2.m128i_i32[0]]; temp2.m128i_u32[1] = table[temp2.m128i_i32[1]]; temp2.m128i_u32[2] = table[temp2.m128i_i32[2]]; temp2.m128i_u32[3] = table[temp2.m128i_i32[3]]; \
-  temp3.m128i_u32[0] = table[temp3.m128i_i32[0]]; temp3.m128i_u32[1] = table[temp3.m128i_i32[1]]; temp3.m128i_u32[2] = table[temp3.m128i_i32[2]]; temp3.m128i_u32[3] = table[temp3.m128i_i32[3]]; \
+  temp0.m128i_u32[0] = table[stbir__srgb_table_index(temp0.m128i_i32[0])-((127-13)*8)]; temp0.m128i_u32[1] = table[stbir__srgb_table_index(temp0.m128i_i32[1])-((127-13)*8)]; temp0.m128i_u32[2] = table[stbir__srgb_table_index(temp0.m128i_i32[2])-((127-13)*8)]; temp0.m128i_u32[3] = table[stbir__srgb_table_index(temp0.m128i_i32[3])-((127-13)*8)]; \
+  temp1.m128i_u32[0] = table[stbir__srgb_table_index(temp1.m128i_i32[0])-((127-13)*8)]; temp1.m128i_u32[1] = table[stbir__srgb_table_index(temp1.m128i_i32[1])-((127-13)*8)]; temp1.m128i_u32[2] = table[stbir__srgb_table_index(temp1.m128i_i32[2])-((127-13)*8)]; temp1.m128i_u32[3] = table[stbir__srgb_table_index(temp1.m128i_i32[3])-((127-13)*8)]; \
+  temp2.m128i_u32[0] = table[stbir__srgb_table_index(temp2.m128i_i32[0])-((127-13)*8)]; temp2.m128i_u32[1] = table[stbir__srgb_table_index(temp2.m128i_i32[1])-((127-13)*8)]; temp2.m128i_u32[2] = table[stbir__srgb_table_index(temp2.m128i_i32[2])-((127-13)*8)]; temp2.m128i_u32[3] = table[stbir__srgb_table_index(temp2.m128i_i32[3])-((127-13)*8)]; \
+  temp3.m128i_u32[0] = table[stbir__srgb_table_index(temp3.m128i_i32[0])-((127-13)*8)]; temp3.m128i_u32[1] = table[stbir__srgb_table_index(temp3.m128i_i32[1])-((127-13)*8)]; temp3.m128i_u32[2] = table[stbir__srgb_table_index(temp3.m128i_i32[2])-((127-13)*8)]; temp3.m128i_u32[3] = table[stbir__srgb_table_index(temp3.m128i_i32[3])-((127-13)*8)]; \
   v0 = temp0.m128i_i128; \
   v1 = temp1.m128i_i128; \
   v2 = temp2.m128i_i128; \
@@ -8925,7 +8927,7 @@ static void STBIR__CODER_NAME( stbir__encode_uint8_srgb )( void * outputp, int w
       stbir__min_max_shift20( i2, f2 );
       stbir__min_max_shift20( i3, f3 );
 
-      stbir__simdi_table_lookup4( i0, i1, i2, i3, ( fp32_to_srgb8_tab4 - (127-13)*8 ) );
+      stbir__simdi_table_lookup4( i0, i1, i2, i3, fp32_to_srgb8_tab4 );
 
       stbir__linear_to_srgb_finish( i0, f0 );
       stbir__linear_to_srgb_finish( i1, f1 );
@@ -9030,7 +9032,7 @@ static void STBIR__CODER_NAME( stbir__encode_uint8_srgb4_linearalpha )( void * o
       stbir__min_max_shift20( i2, f2 );
       stbir__scale_and_convert( i3, f3 );
 
-      stbir__simdi_table_lookup3( i0, i1, i2, ( fp32_to_srgb8_tab4 - (127-13)*8 ) );
+      stbir__simdi_table_lookup3( i0, i1, i2, fp32_to_srgb8_tab4 );
 
       stbir__linear_to_srgb_finish( i0, f0 );
       stbir__linear_to_srgb_finish( i1, f1 );
@@ -9124,7 +9126,7 @@ static void STBIR__CODER_NAME( stbir__encode_uint8_srgb2_linearalpha )( void * o
       stbir__min_max_shift20( i2, f2 );
       stbir__scale_and_convert( i3, f3 );
 
-      stbir__simdi_table_lookup2( i0, i2, ( fp32_to_srgb8_tab4 - (127-13)*8 ) );
+      stbir__simdi_table_lookup2( i0, i2, fp32_to_srgb8_tab4 );
 
       stbir__linear_to_srgb_finish( i0, f0 );
       stbir__linear_to_srgb_finish( i2, f2 );

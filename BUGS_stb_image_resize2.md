@@ -534,5 +534,12 @@
   ```
   Compile with: `clang -I. -g -O1 -fsanitize=address,undefined -o test test.c -lm`
   Run with: `UBSAN_OPTIONS=halt_on_error=1:abort_on_error=1 ./test`
-- **Status:** Validated
+- **Status:** Patched
 - **Validation test:** `tests/bug_stb_image_resize2_017.c` — UBSan reports "index -912 out of bounds for type 'const stbir_uint32[104]'".
+- **Fix:** Clamped SIMD sRGB table indices to the valid shifted range and passed the real table base at `stb_image_resize2.h:8861-8898`, `stb_image_resize2.h:8930`, `stb_image_resize2.h:9035`, and `stb_image_resize2.h:9129`.
+
+## Session Summary — 2026-07-06
+
+| Bug ID | Severity | Class | Status | Notes |
+|--------|----------|-------|--------|-------|
+| BUG-stb_image_resize2-017 | High | Out-of-Bounds Table Index | Patched | Fixed at `stb_image_resize2.h:8861-8898`, `stb_image_resize2.h:8930`, `stb_image_resize2.h:9035`, and `stb_image_resize2.h:9129`. |
