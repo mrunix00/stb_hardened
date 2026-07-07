@@ -336,7 +336,7 @@ static int stb__clex_parse_suffixes(stb_lexer *lexer, long tokenid, char *start,
    lexer->string = lexer->string_storage;
    lexer->string_len = 0;
 
-   while ((*cur >= 'a' && *cur <= 'z') || (*cur >= 'A' && *cur <= 'Z')) {
+   while (cur != lexer->eof && ((*cur >= 'a' && *cur <= 'z') || (*cur >= 'A' && *cur <= 'Z'))) {
       if (stb__strchr(suffixes, *cur) == 0)
          return stb__clex_token(lexer, CLEX_parse_error, start, cur);
       if (lexer->string_len+1 >= lexer->string_storage_len)

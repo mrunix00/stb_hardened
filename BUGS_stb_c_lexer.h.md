@@ -275,7 +275,8 @@ stb_c_lexer_init(&lex, buf, buf + 1, store, store_len);
 // stb_c_lexer_get_token(&lex) parses "1", calls stb__clex_parse_suffixes with cur == eof
 // stb__clex_parse_suffixes reads *cur == *eof -> OOB
 ```
-- **Status:** Unvalidated
+- **Status:** Patched
+- **Fix:** Added `cur != lexer->eof` to the suffix-letter loop guard at `stb_c_lexer.h:339` so suffix parsing stops before dereferencing one-past-end input.
 
 ---
 
@@ -316,3 +317,9 @@ stb_c_lexer_init(&lex, buf, buf + 2, store, store_len);
 | BUG-stb_c_lexer-008 | High | OOB Read | Patched | String escape reads past eof when backslash is last byte — fixed at stb_c_lexer.h:479-483 |
 | BUG-stb_c_lexer-009 | Medium | OOB Read | Patched | Char-literal escape reads past eof when escape at eof-2 — fixed at stb_c_lexer.h:674 |
 | BUG-stb_c_lexer-010 | Medium | OOB Read | Patched | strtol/strtod unbounded read — fixed by changing default to bounded parser at stb_c_lexer.h:93 |
+
+## Session Summary — 2026-07-06
+
+| Bug ID | Severity | Class | Status | Notes |
+|--------|----------|-------|--------|-------|
+| BUG-stb_c_lexer-011 | Medium | OOB Read (Heap Buffer Overflow) | Patched | Fixed at `stb_c_lexer.h:339`; added EOF guard to suffix parsing loop. |
