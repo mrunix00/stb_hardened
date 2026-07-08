@@ -168,6 +168,111 @@
 - **Status:** Patched
 - **Fix:** Added dt guard at `hexwave_generate_samples` entry (line 430): `if (!(dt > 0.0f) || dt > 1.0f) dt = 1.0f;` catches NaN (NaN comparisons are always false), Infinity (fabs(Inf) = Inf, Inf > 1 is true), and FLT_MAX (3.4e38 > 1). Clamping to 1.0 prevents the float32 precision wrap failure (`t -= 1.0f` has no effect on FLT_MAX-scale values) and ensures valid dt for `min_len = dt/256.0f`. Also updated BUG-008's fslot clamp to handle NaN via `!(fslot >= 0.0f)` pattern.
 
+## BUG-STB_HEXWAVE-010
+
+- **Library:** `stb_hexwave.h`
+- **Severity:** Medium
+- **Class:** Use-After-Free
+- **Location:** `stb_hexwave.h:561-569` (`hexwave_shutdown`), `stb_hexwave.h:307-313` (static `hexblep` state)
+- **Source:** static-analysis
+- **Technique:** static-analysis
+- **Description:**
+  `hexwave_shutdown` frees `hexblep.blep` and `hexblep.blamp` but does not clear the
+  process-global `hexblep` state. After shutdown, `hexblep.width` remains non-zero and
+  `hexblep.blep`/`hexblep.blamp` still point into the just-freed heap region. Any later
+  call to `hexwave_generate_samples` (for example a deferred or asynchronous audio
+  callback that fires after teardown, or a code path that generates samples before a
+  re-initialization) reads the freed tables inside `hex_add_oversampled_bleplike`,
+  producing a use-after-free. The library leaves no safe "uninitialized" sentinel after
+  shutdown, so the dangling global state is silently reused.
+- **Reproduction sketch:**
+  ```c
+  hexwave_init(32, 16, NULL);
+  hexwave_shutdown(NULL);                                   // frees blep/blamp, state left dangling
+  HexWave osc;
+  hexwave_create(&osc, 1, 0.5f, 1.0f, 0.0f);
+  float out[256];
+  hexwave_generate_samples(out, 200, &osc, 0.3f);          // heap-use-after-free
+  ```
+- **Status:** Patched
+- **Fix:** In `hexwave_shutdown`, after `free(hexblep.blep)` / `free(hexblep.blamp)` in the
+  `user_buffer == 0` branch, also clear the global state (`hexblep.blep = hexblep.blamp = 0;`,
+  `hexblep.width = hexblep.oversample = 0`). A `hexwave_generate_samples()` call after shutdown
+  now runs in the safe `width == 0` degenerate mode instead of dereferencing the freed BLEP/BLAMP
+  tables. Change confined to `stb_hexwave.h:561-569`.
+
+## BUG-STB_HEXWAVE-011
+
+- **Library:** `stb_hexwave.h`
+- **Severity:** Low
+- **Class:** Memory Leak
+- **Location:** `stb_hexwave.h:597-611` (`hexwave_init` NULL path)
+- **Source:** static-analysis
+- **Technique:** static-analysis
+- **Description:**
+  `hexwave_init` (the `user_buffer == 0` / NULL path) heap-allocates `blep` and `blamp`
+  via `malloc`, but it never frees a previous allocation if it is called more than once
+  without an intervening `hexwave_shutdown`. Each successive initialization leaks the
+  prior `blep`/`blamp` buffers. The global `hexblep` state carries no ownership marker,
+  so the library cannot tell whether the currently-held tables are library-allocated
+  (must be freed) or sub-allocations of a caller-provided `user_buffer` (must NOT be
+  freed). Repeated re-initialization in a long-running process leaks memory.
+- **Reproduction sketch:**
+  ```c
+  hexwave_init(32, 16, NULL);
+  hexwave_init(32, 16, NULL);   // first blep/blamp allocation is leaked
+  hexwave_shutdown(NULL);       // only frees the second allocation
+  ```
+  Run under ASan with `detect_leaks=1`; LeakSanitizer reports the first allocation as
+  still reachable / leaked.
+- **Status:** Invalid
+- **Validation:** `tests/bug_stb_hexwave_012.c` drives `hexwave_create`/`hexwave_change` with
+  `half_height` = NaN / Inf / -Inf / +/-1e30 and generates samples under ASan+UBSan. No
+  memory-safety fault (OOB read/write, UB, leak, or infinite loop) is observed; the only
+  effect is non-finite values (NaN/Inf) in the OUTPUT buffer. Segment *times* depend only on
+  the clamped `zero_wait`/`peak_time`/`reflect`, so the synthesis loops stay bounded and never
+  go out of bounds. Non-finite output is the documented contract limitation (the header states
+  "half_height is not clamped" to permit morphs with |h|>1 and negative h, e.g. Sawtooth (8va)
+  at h=-1 and crossfades up to h=2). Clamping `half_height` would break those legitimate uses,
+  so no fix is applied. Not a security defect -> Invalid.
+
+
+## BUG-STB_HEXWAVE-012
+
+- **Library:** `stb_hexwave.h`
+- **Severity:** Low
+- **Class:** Numerical / Quality (NaN & Inf propagation) — not a memory-safety defect
+- **Location:** `stb_hexwave.h:241`, `stb_hexwave.h:287-305` (`hexwave_create`/`hexwave_change`), `stb_hexwave.h:355-421` (`hexwave_generate_linesegs`)
+- **Source:** static-analysis
+- **Technique:** static-analysis
+- **Description:**
+  `hexwave_create` / `hexwave_change` accept `half_height` without validation — the
+  header itself notes "half_height is not clamped". Passing `NaN` or `Inf` produces
+  `NaN`/`Inf` in the segment vertices (`vert[].v`) and slopes (`vert[].s`), which
+  propagate into the output buffer as `NaN`/`Inf` samples. This is a quality /
+  correctness issue, **not** a memory-safety bug: segment *times* (`vert[].t`) depend
+  only on `zero_wait`, `peak_time`, and `reflect`, all of which are clamped, so the
+  bounded synthesis loops never read or write out of bounds and never loop forever.
+  Under ASan+UBSan no fault is observed — the output simply contains non-finite
+  values. Documented as a known API contract limitation rather than a security defect.
+- **Reproduction sketch:**
+  ```c
+  HexWave osc;
+  hexwave_create(&osc, 1, 0.5f, NAN, 0.0f);
+  float out[256];
+  hexwave_generate_samples(out, 200, &osc, 0.3f);   // output has NaN, no crash/OOB
+  ```
+- **Status:** Patched
+- **Fix:** Added an `own` flag to the static `hexblep` struct recording whether the library
+  heap-owns the BLEP/BLAMP tables (`hexblep.own = (user_buffer == 0) ? 1 : 0;` at the end of
+  `hexwave_init`). On re-init, `hexwave_init` now frees the previous library-owned tables
+  (`if (hexblep.own) { free(hexblep.blep); free(hexblep.blamp); }`) before allocating new ones,
+  eliminating the leak. `hexwave_shutdown` now frees based on `hexblep.own` (instead of the
+  `user_buffer` argument) and clears `own` to 0; this also makes it robust against a mismatched
+  shutdown argument (e.g. init(buf) then shutdown(NULL) no longer frees user memory). Changes
+  confined to `stb_hexwave.h` (struct + `hexwave_init` + `hexwave_shutdown`).
+
+
 ## Session Summary — 2026-06-17
 
 | Bug ID | Severity | Class | Status | Notes |
@@ -181,3 +286,31 @@
 | BUG-STB_HEXWAVE-007 | High | Out-of-Bounds Array Access | Patched | Added j==8 wrap after segment-finding loop to prevent vert[9] access |
 | BUG-STB_HEXWAVE-008 | Medium | Undefined Behavior (Float-to-Int Overflow) | Patched | Clamped fslot to [0, oversample] before int cast, with NaN guard |
 | BUG-STB_HEXWAVE-009 | Low | Denial of Service (Infinite Loop) | Patched | Clamped dt at entry to catch NaN/Inf/FLT_MAX |
+
+## Session Summary — 2026-07-08
+
+| Bug ID | Severity | Class | Status | Notes |
+|--------|----------|-------|--------|-------|
+| BUG-STB-HEXWAVE-001 | Medium | Logic Error / Audio Artifact | Patched | Moved BLAMP fixup after memcpy at stb_hexwave.h:437-447 (prior session) |
+| BUG-STB-HEXWAVE-002 | High | Memory Management | Patched | Inverted free condition fixed (prior session) |
+| BUG-STB-HEXWAVE-003 | Medium | NULL Pointer Dereference | Patched | NULL checks after malloc (prior session) |
+| BUG-STB-HEXWAVE-004 | High | Integer Overflow / Heap Buffer Overflow | Patched | oversample bounds check (prior session) |
+| BUG-STB-HEXWAVE-005 | Informational | Division by Zero | Patched | Same oversample bounds check (prior session) |
+| BUG-STB-HEXWAVE-006 | High | Heap Buffer Overflow | Patched | freq-change BLAMP redirected to temp_output (prior session) |
+| BUG-STB-HEXWAVE-007 | High | Out-of-Bounds Array Access | Patched | j==8 wrap after segment-finding loop (prior session) |
+| BUG-STB-HEXWAVE-008 | Medium | Undefined Behavior (Float-to-Int Overflow) | Patched | fslot clamped before int cast (prior session) |
+| BUG-STB-HEXWAVE-009 | Low | Denial of Service (Infinite Loop) | Patched | dt guard at entry (prior session) |
+| BUG-STB-HEXWAVE-010 | Medium | Use-After-Free | Patched | Clear hexblep state in hexwave_shutdown (this session) |
+| BUG-STB-HEXWAVE-011 | Low | Memory Leak | Patched | Added `own` flag; free previous tables on re-init (this session) |
+| BUG-STB-HEXWAVE-012 | Low | Numerical / Quality (NaN & Inf propagation) | Invalid | Non-finite half_height only yields non-finite output; no memory fault (this session) |
+
+Technique: static-analysis. AUTO_PROGRESS session. New findings validated and patched:
+- BUG-010 (use-after-free after shutdown): `hexwave_shutdown` now clears the global `hexblep`
+  state (blep/blamp = NULL, width = oversample = own = 0) so a post-shutdown
+  `hexwave_generate_samples` runs in the safe width==0 degenerate mode instead of reading freed heap.
+- BUG-011 (re-init leak): added an `own` ownership flag; `hexwave_init` frees the previous
+  library-owned tables on re-init, and `hexwave_shutdown` frees based on `own` (robust against a
+  mismatched shutdown argument).
+- BUG-012 (unvalidated half_height): confirmed non-security (only non-finite output); left as a
+  documented contract limitation, no fix applied.
+All 9 pre-existing regression tests plus the 3 new tests pass under ASan+UBSan; no regressions.

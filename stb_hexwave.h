@@ -308,6 +308,7 @@ static struct
 {
    int width;       // width of fixup in samples
    int oversample;  // number of oversampled versions (there's actually one more to allow lerpign)
+   int own;         // 1 if the library heap-owns blep/blamp (NULL init), 0 if user-provided buffer
    float *blep;
    float *blamp;
 } hexblep;
@@ -561,9 +562,17 @@ STB_HEXWAVE_DEF void hexwave_generate_samples(float *output, int num_samples, He
 STB_HEXWAVE_DEF void hexwave_shutdown(float *user_buffer)
 {
    #ifndef STB_HEXWAVE_NO_ALLOCATION
-   if (user_buffer == 0) {
+   if (hexblep.own) {
       free(hexblep.blep);
       free(hexblep.blamp);
+      // Clear the global state so a later hexwave_generate_samples() cannot
+      // read the just-freed tables (use-after-free). A post-shutdown call now
+      // runs in the safe width==0 degenerate mode instead of touching freed heap.
+      hexblep.blep  = 0;
+      hexblep.blamp = 0;
+      hexblep.width = 0;
+      hexblep.oversample = 0;
+      hexblep.own  = 0;
    }
    #endif
 }
@@ -601,6 +610,15 @@ STB_HEXWAVE_DEF void hexwave_init(int width, int oversample, float *user_buffer)
 #endif
    step = buffers + 0*n;
    ramp = buffers + 1*n;
+
+   #ifndef STB_HEXWAVE_NO_ALLOCATION
+   // On re-init, free a previous library-owned allocation so it is not leaked.
+   if (hexblep.own) {
+      free(hexblep.blep);
+      free(hexblep.blamp);
+      hexblep.blep = hexblep.blamp = 0;
+   }
+   #endif
 
    if (user_buffer == 0) {
       #ifndef STB_HEXWAVE_NO_ALLOCATION
@@ -659,6 +677,7 @@ STB_HEXWAVE_DEF void hexwave_init(int width, int oversample, float *user_buffer)
    hexblep.blamp = blamp_buffer;
    hexblep.width = width;
    hexblep.oversample = oversample;
+   hexblep.own  = (user_buffer == 0) ? 1 : 0;
 
    #ifndef STB_HEXWAVE_NO_ALLOCATION
    if (user_buffer == 0)
